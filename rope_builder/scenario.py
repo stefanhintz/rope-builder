@@ -270,16 +270,16 @@ class RopeBuilderController:
             return
 
         half = self._params.segment_length * 0.5
-        start_center = self._segment_center_position(0)
-        end_center = self._segment_center_position(self._params.segment_count - 1)
+        start_segment = self._segment_paths[0]
+        end_segment = self._segment_paths[-1]
 
-        start_pos = start_center - Gf.Vec3d(half, 0.0, 0.0)
-        end_pos = end_center + Gf.Vec3d(half, 0.0, 0.0)
+        self._start_anchor_path = f"{start_segment}/start_anchor"
+        self._end_anchor_path = f"{end_segment}/end_anchor"
 
-        self._define_anchor(stage, self._start_anchor_path, start_pos)
-        self._define_anchor(stage, self._end_anchor_path, end_pos)
+        self._define_anchor(stage, self._start_anchor_path, Gf.Vec3d(-half, 0.0, 0.0))
+        self._define_anchor(stage, self._end_anchor_path, Gf.Vec3d(half, 0.0, 0.0))
 
-    def _define_anchor(self, stage, path: str, position: Gf.Vec3d):
+    def _define_anchor(self, stage, path: str, local_offset: Gf.Vec3d):
         anchor_prim = UsdGeom.Xform.Define(stage, Sdf.Path(path))
         anchor_prim.ClearXformOpOrder()
-        anchor_prim.AddTranslateOp().Set(position)
+        anchor_prim.AddTranslateOp().Set(local_offset)
