@@ -86,6 +86,27 @@ class RopeBuilderController:
         self._ensure_parameter_defaults()
         carb.log_info(f"[RopeBuilder] Updated parameters: {self._params}")
 
+    def update_rope(self):
+        """Apply updated parameters to the existing rope without rebuilding prims."""
+        if not self._rope_exists:
+            raise RuntimeError("No rope has been created yet.")
+
+        if self._params.segment_count != len(self._segment_paths):
+            raise ValueError("Updating the segment count requires recreating the rope.")
+
+        if not self._validate_params(self._params):
+            raise ValueError("Invalid rope parameters. Please fix the highlighted values.")
+
+        stage = self._usd_context.get_stage()
+        if stage is None:
+            raise RuntimeError("No open USD stage. Create or open a stage before updating the rope.")
+
+        self._update_segments(stage)
+        self._update_joints(stage)
+        self._update_anchor_offsets(stage)
+        carb.log_info("[RopeBuilder] Rope parameters updated in place.")
+        return self._rope_root_path
+
     def create_rope(self) -> str:
         """Create the rope prim hierarchy on the current stage.
 
@@ -283,3 +304,78 @@ class RopeBuilderController:
         anchor_prim = UsdGeom.Xform.Define(stage, Sdf.Path(path))
         anchor_prim.ClearXformOpOrder()
         anchor_prim.AddTranslateOp().Set(local_offset)
+
+    def _update_segments(self, stage):
+        for idx, segment_path in enumerate(self._segment_paths):
+            path = Sdf.Path(segment_path)
+            xform = UsdGeom.Xform.Get(stage, path)
+            if not xform:
+                continue
+
+            xform.ClearXformOpOrder()
+            xform.AddTranslateOp().Set(self._segment_center_position(idx))
+
+            radius = self._params.diameter * 0.5
+            collision_path = path.AppendPath("collision")
+            visual_path = path.AppendPath("visual")
+
+            collision = UsdGeom.Capsule.Get(stage, collision_path)
+            if collision:
+                collision.CreateRadiusAttr(radius)
+                collision.CreateHeightAttr(self._capsule_height(radius))
+
+            visual = UsdGeom.Cylinder.Get(stage, visual_path)
+            if visual:
+                visual_radius = max(radius * self._params.visual_radius_scale, 1e-4)
+                visual.CreateRadiusAttr(visual_radius)
+                visual.CreateHeightAttr(self._params.segment_length)
+                visual.CreateDisplayColorAttr([self._params.visual_color])
+
+            mass_api = UsdPhysics.MassAPI.Get(stage, path)
+            if mass_api:
+                mass_api.CreateMassAttr(self._params.segment_mass)
+
+    def _update_joints(self, stage):
+        half_length = self._params.segment_length * 0.5
+        drive_axes = [
+            UsdPhysics.Tokens.transX,
+            UsdPhysics.Tokens.transY,
+            UsdPhysics.Tokens.transZ,
+            UsdPhysics.Tokens.rotX,
+            UsdPhysics.Tokens.rotY,
+            UsdPhysics.Tokens.rotZ,
+        ]
+
+        for joint_path in self._joint_paths:
+            path = Sdf.Path(joint_path)
+            joint = UsdPhysics.Joint.Get(stage, path)
+            if not joint:
+                continue
+
+            joint.CreateLocalPos0Attr().Set(Gf.Vec3f(half_length, 0.0, 0.0))
+            joint.CreateLocalPos1Attr().Set(Gf.Vec3f(-half_length, 0.0, 0.0))
+
+            for axis in drive_axes:
+                drive = UsdPhysics.DriveAPI.Get(joint.GetPrim(), axis)
+                if not drive:
+                    drive = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), axis)
+                drive.CreateTargetPositionAttr().Set(0.0)
+                drive.CreateTargetVelocityAttr().Set(0.0)
+                drive.CreateStiffnessAttr(self._params.joint_stiffness)
+                drive.CreateDampingAttr(self._params.joint_damping)
+                drive.CreateMaxForceAttr(1e6)
+
+    def _update_anchor_offsets(self, stage):
+        if not self._segment_paths:
+            return
+
+        half = self._params.segment_length * 0.5
+        start_anchor = UsdGeom.Xform.Get(stage, Sdf.Path(self._start_anchor_path))
+        end_anchor = UsdGeom.Xform.Get(stage, Sdf.Path(self._end_anchor_path))
+
+        if start_anchor:
+            start_anchor.ClearXformOpOrder()
+            start_anchor.AddTranslateOp().Set(Gf.Vec3d(-half, 0.0, 0.0))
+        if end_anchor:
+            end_anchor.ClearXformOpOrder()
+            end_anchor.AddTranslateOp().Set(Gf.Vec3d(half, 0.0, 0.0))
