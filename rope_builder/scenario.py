@@ -167,21 +167,21 @@ class RopeBuilderController:
         xform.AddTranslateOp().Set(center)
 
         radius = self._params.diameter * 0.5
-        height = self._params.segment_length
-
         collision_path = segment_path.AppendPath("collision")
         collision = UsdGeom.Capsule.Define(stage, collision_path)
         collision.CreateRadiusAttr(radius)
         collision.CreateHeightAttr(self._capsule_height(radius))
         collision.CreateAxisAttr(UsdGeom.Tokens.x)
         UsdPhysics.CollisionAPI.Apply(collision.GetPrim())
+        UsdGeom.Imageable(collision.GetPrim()).MakeInvisible()
 
         visual_path = segment_path.AppendPath("visual")
         visual = UsdGeom.Cylinder.Define(stage, visual_path)
-        visual.CreateRadiusAttr(radius * 0.95)
-        visual.CreateHeightAttr(self._capsule_height(radius))
+        visual_radius = max(radius * self._params.visual_radius_scale, 1e-4)
+        visual.CreateRadiusAttr(visual_radius)
+        visual.CreateHeightAttr(self._params.segment_length)
         visual.CreateAxisAttr(UsdGeom.Tokens.x)
-        visual.CreateDisplayColorAttr([(0.8, 0.4, 0.1)])
+        visual.CreateDisplayColorAttr([self._params.visual_color])
 
         rigid_prim = xform.GetPrim()
         UsdPhysics.RigidBodyAPI.Apply(rigid_prim)
