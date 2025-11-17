@@ -18,4 +18,4 @@ writeTarget.kit = true
 "omni.kit.uiapp" = {}
 
 [[python.module]]
-name = "rope_builder"
+name = "rope-builder"
