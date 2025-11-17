@@ -3,7 +3,7 @@ version = "1.0.1"
 category = "Simulation"
 title = "Rope Builder"
 description = "Building ropes and cables in Isaac Sim"
-authors = ["NVIDIA"]
+authors = Stefan Hintz
 repository = ""
 keywords = []
 changelog = "docs/CHANGELOG.md"
@@ -18,4 +18,4 @@ writeTarget.kit = true
 "omni.kit.uiapp" = {}
 
 [[python.module]]
-name = "rope-builder"
+name = "rope_builder"
