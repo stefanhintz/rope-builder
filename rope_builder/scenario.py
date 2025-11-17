@@ -57,6 +57,7 @@ class RopeBuilderController:
     def __init__(self):
         self._usd_context = omni.usd.get_context()
         self._params = RopeParameters()
+        self._ensure_parameter_defaults()
         self._rope_root_path = "/RopeBuilder/Rope"
         self._rope_exists = False
         self._segment_paths: List[str] = []
@@ -69,6 +70,7 @@ class RopeBuilderController:
 
     def set_parameters(self, params: RopeParameters):
         self._params = params
+        self._ensure_parameter_defaults()
         carb.log_info(f"[RopeBuilder] Updated parameters: {self._params}")
 
     def create_rope(self) -> str:
@@ -131,6 +133,13 @@ class RopeBuilderController:
 
     def validate_parameters(self) -> bool:
         return self._validate_params(self._params)
+
+    def _ensure_parameter_defaults(self):
+        """Fill in any missing attributes when hot-reloading older state."""
+        defaults = RopeParameters()
+        for field in defaults.__dataclass_fields__.keys():
+            if not hasattr(self._params, field):
+                setattr(self._params, field, getattr(defaults, field))
 
     @staticmethod
     def _validate_params(params: RopeParameters) -> bool:
