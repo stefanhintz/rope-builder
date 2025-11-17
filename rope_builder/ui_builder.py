@@ -64,7 +64,7 @@ class UIBuilder:
             with ui.VStack(style=get_style(), spacing=8, height=0):
                 self._build_float_field("Length (m)", "length", min_value=0.1, step=0.05)
                 self._build_float_field("Diameter (m)", "diameter", min_value=0.005, step=0.005)
-                self._build_int_field("Segments", "capsule_count", min_value=2, step=1)
+                self._build_int_field("Segments", "segment_count", min_value=2, step=1)
                 self._build_float_field("Mass (kg)", "mass", min_value=0.01, step=0.1)
                 self._build_float_field("Joint Stiffness", "joint_stiffness", min_value=0.0, step=10.0)
                 self._build_float_field("Joint Damping", "joint_damping", min_value=0.0, step=1.0)

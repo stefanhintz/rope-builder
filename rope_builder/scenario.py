@@ -16,8 +16,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import List
+
 import carb
 import omni.usd
+from pxr import Gf, PhysxSchema, Sdf, UsdGeom, UsdPhysics
 
 
 @dataclass
@@ -26,22 +29,22 @@ class RopeParameters:
 
     length: float = 2.0  # meters
     diameter: float = 0.05  # meters
-    capsule_count: int = 10
+    segment_count: int = 10
     mass: float = 1.0  # kilograms
     joint_stiffness: float = 500.0  # N*m/rad equivalent (placeholder)
     joint_damping: float = 5.0  # N*m*s/rad equivalent (placeholder)
 
     @property
-    def capsule_length(self) -> float:
-        if self.capsule_count <= 0:
+    def segment_length(self) -> float:
+        if self.segment_count <= 0:
             return 0.0
-        return self.length / self.capsule_count
+        return self.length / self.segment_count
 
     @property
-    def capsule_mass(self) -> float:
-        if self.capsule_count <= 0:
+    def segment_mass(self) -> float:
+        if self.segment_count <= 0:
             return 0.0
-        return self.mass / self.capsule_count
+        return self.mass / self.segment_count
 
 
 class RopeBuilderController:
@@ -56,6 +59,9 @@ class RopeBuilderController:
         self._params = RopeParameters()
         self._rope_root_path = "/RopeBuilder/Rope"
         self._rope_exists = False
+        self._segment_paths: List[str] = []
+        self._joint_paths: List[str] = []
+        self._physics_scene_path = "/World/physicsScene"
 
     @property
     def parameters(self) -> RopeParameters:
@@ -78,12 +84,29 @@ class RopeBuilderController:
         if stage is None:
             raise RuntimeError("No open USD stage. Create or open a stage before building a rope.")
 
-        # Placeholder: actual prim authoring will be implemented in subsequent steps.
+        self.delete_rope()
+
         carb.log_info(
-            "[RopeBuilder] Requested rope creation "
-            f"(length={self._params.length} m, diameter={self._params.diameter} m, "
-            f"capsules={self._params.capsule_count}, mass={self._params.mass} kg)."
+            "[RopeBuilder] Building rope with "
+            f"{self._params.segment_count} segments, total length {self._params.length} m."
         )
+
+        self._ensure_physics_scene(stage)
+        root_prim = UsdGeom.Xform.Define(stage, Sdf.Path(self._rope_root_path))
+        root_prim.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.0))
+
+        self._segment_paths = []
+        self._joint_paths = []
+
+        prev_segment_path = None
+        for idx in range(self._params.segment_count):
+            segment_path = self._create_segment(stage, idx)
+            if prev_segment_path:
+                joint_path = self._create_d6_joint(stage, idx - 1, prev_segment_path, segment_path)
+                self._joint_paths.append(joint_path)
+            self._segment_paths.append(segment_path)
+            prev_segment_path = segment_path
+
         self._rope_exists = True
         return self._rope_root_path
 
@@ -100,6 +123,8 @@ class RopeBuilderController:
                 carb.log_info("[RopeBuilder] Deleted rope prim hierarchy.")
 
         self._rope_exists = False
+        self._segment_paths = []
+        self._joint_paths = []
 
     def rope_exists(self) -> bool:
         return self._rope_exists
@@ -114,9 +139,88 @@ class RopeBuilderController:
             [
                 params.length > 0.0,
                 params.diameter > 0.0,
-                params.capsule_count > 1,
+                params.segment_count > 1,
                 params.mass > 0.0,
                 params.joint_stiffness >= 0.0,
                 params.joint_damping >= 0.0,
             ]
         )
+
+    def _ensure_physics_scene(self, stage):
+        """Create a default PhysX scene if the stage does not have one."""
+        scene_prim = stage.GetPrimAtPath(self._physics_scene_path)
+        if scene_prim and scene_prim.IsValid():
+            return
+
+        scene = UsdPhysics.Scene.Define(stage, Sdf.Path(self._physics_scene_path))
+        scene.CreateGravityDirectionAttr().Set(Gf.Vec3f(0, 0, -1))
+        scene.CreateGravityMagnitudeAttr().Set(981.0)
+
+    def _create_segment(self, stage, index: int) -> str:
+        """Author the prims for an individual rope segment."""
+        segment_path = Sdf.Path(f"{self._rope_root_path}/segment_{index:03d}")
+        xform = UsdGeom.Xform.Define(stage, segment_path)
+
+        center = self._segment_center_position(index)
+        xform.AddTranslateOp().Set(center)
+
+        radius = self._params.diameter * 0.5
+        height = self._params.segment_length
+
+        collision_path = segment_path.AppendPath("collision")
+        collision = UsdGeom.Capsule.Define(stage, collision_path)
+        collision.CreateRadiusAttr(radius)
+        collision.CreateHeightAttr(height)
+        collision.CreateAxisAttr(UsdGeom.Tokens.x)
+        UsdPhysics.CollisionAPI.Apply(collision.GetPrim())
+
+        visual_path = segment_path.AppendPath("visual")
+        visual = UsdGeom.Cylinder.Define(stage, visual_path)
+        visual.CreateRadiusAttr(radius * 0.95)
+        visual.CreateHeightAttr(height)
+        visual.CreateAxisAttr(UsdGeom.Tokens.x)
+        visual.CreateDisplayColorAttr([(0.8, 0.4, 0.1)])
+
+        rigid_prim = xform.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(rigid_prim)
+        mass_api = UsdPhysics.MassAPI.Apply(rigid_prim)
+        mass_api.CreateMassAttr(self._params.segment_mass)
+
+        # Enable CCD for better stability when the rope moves quickly.
+        physx_body = PhysxSchema.PhysxRigidBodyAPI.Apply(rigid_prim)
+        if physx_body:
+            physx_body.CreateEnableCCDAttr(True)
+
+        return str(segment_path)
+
+    def _create_d6_joint(self, stage, joint_index: int, body0_path: str, body1_path: str) -> str:
+        """Create a D6 joint connecting two neighboring segments."""
+        joint_path = Sdf.Path(f"{self._rope_root_path}/joint_{joint_index:03d}")
+        joint = UsdPhysics.Joint.Define(stage, joint_path)
+        joint.CreateBody0Rel().SetTargets([body0_path])
+        joint.CreateBody1Rel().SetTargets([body1_path])
+
+        half_length = self._params.segment_length * 0.5
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(half_length, 0.0, 0.0))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(-half_length, 0.0, 0.0))
+
+        physx_joint = PhysxSchema.PhysxJointAPI.Apply(joint.GetPrim())
+        if physx_joint:
+            physx_joint.CreateJointTypeAttr().Set(PhysxSchema.Tokens.d6)
+
+        for axis in ("linear", "angular"):
+            drive = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), axis)
+            drive.CreateTargetPositionAttr().Set(0.0)
+            drive.CreateTargetVelocityAttr().Set(0.0)
+            drive.CreateStiffnessAttr(self._params.joint_stiffness)
+            drive.CreateDampingAttr(self._params.joint_damping)
+            drive.CreateMaxForceAttr(0.0)
+
+        return str(joint_path)
+
+    def _segment_center_position(self, index: int) -> Gf.Vec3d:
+        """Compute the world-space center of the segment assuming a straight rope along X."""
+        spacing = self._params.segment_length
+        start = -0.5 * self._params.length + 0.5 * spacing
+        x = start + index * spacing
+        return Gf.Vec3d(x, 0.0, 0.0)
