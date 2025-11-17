@@ -13,140 +13,110 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
 
-class ScenarioTemplate:
+from dataclasses import dataclass
+import carb
+import omni.usd
+
+
+@dataclass
+class RopeParameters:
+    """Container describing the rope layout and physical properties."""
+
+    length: float = 2.0  # meters
+    diameter: float = 0.05  # meters
+    capsule_count: int = 10
+    mass: float = 1.0  # kilograms
+    joint_stiffness: float = 500.0  # N*m/rad equivalent (placeholder)
+    joint_damping: float = 5.0  # N*m*s/rad equivalent (placeholder)
+
+    @property
+    def capsule_length(self) -> float:
+        if self.capsule_count <= 0:
+            return 0.0
+        return self.length / self.capsule_count
+
+    @property
+    def capsule_mass(self) -> float:
+        if self.capsule_count <= 0:
+            return 0.0
+        return self.mass / self.capsule_count
+
+
+class RopeBuilderController:
+    """Owns the USD prims that make up the rope and implements the create/delete logic.
+
+    The actual PhysX authoring will be added iteratively; for now the class tracks the
+    requested parameters and provides a place to hook stage operations into.
+    """
+
     def __init__(self):
-        pass
+        self._usd_context = omni.usd.get_context()
+        self._params = RopeParameters()
+        self._rope_root_path = "/RopeBuilder/Rope"
+        self._rope_exists = False
 
-    def setup_scenario(self):
-        pass
+    @property
+    def parameters(self) -> RopeParameters:
+        return self._params
 
-    def teardown_scenario(self):
-        pass
+    def set_parameters(self, params: RopeParameters):
+        self._params = params
+        carb.log_info(f"[RopeBuilder] Updated parameters: {self._params}")
 
-    def update_scenario(self):
-        pass
+    def create_rope(self) -> str:
+        """Create the rope prim hierarchy on the current stage.
 
+        For now this only validates and stores the intent so that the UI flow can be
+        tested end-to-end.
+        """
+        if not self._validate_params(self._params):
+            raise ValueError("Invalid rope parameters. Please fix the highlighted values.")
 
-import numpy as np
-from isaacsim.core.utils.types import ArticulationAction
+        stage = self._usd_context.get_stage()
+        if stage is None:
+            raise RuntimeError("No open USD stage. Create or open a stage before building a rope.")
 
-"""
-This scenario takes in a robot Articulation and makes it move through its joint DOFs.
-Additionally, it adds a cuboid prim to the stage that moves in a circle around the robot.
+        # Placeholder: actual prim authoring will be implemented in subsequent steps.
+        carb.log_info(
+            "[RopeBuilder] Requested rope creation "
+            f"(length={self._params.length} m, diameter={self._params.diameter} m, "
+            f"capsules={self._params.capsule_count}, mass={self._params.mass} kg)."
+        )
+        self._rope_exists = True
+        return self._rope_root_path
 
-The particular framework under which this scenario operates should not be taken as a direct
-recomendation to the user about how to structure their code.  In the simple example put together
-in this template, this particular structure served to improve code readability and separate
-the logic that runs the example from the UI design.
-"""
-
-
-class ExampleScenario(ScenarioTemplate):
-    def __init__(self):
-        self._object = None
-        self._articulation = None
-
-        self._running_scenario = False
-
-        self._time = 0.0  # s
-
-        self._object_radius = 0.5  # m
-        self._object_height = 0.5  # m
-        self._object_frequency = 0.25  # Hz
-
-        self._joint_index = 0
-        self._max_joint_speed = 4  # rad/sec
-        self._lower_joint_limits = None
-        self._upper_joint_limits = None
-
-        self._joint_time = 0
-        self._path_duration = 0
-        self._calculate_position = lambda t, x: 0
-        self._calculate_velocity = lambda t, x: 0
-
-    def setup_scenario(self, articulation, object_prim):
-        self._articulation = articulation
-        self._object = object_prim
-
-        self._initial_object_position = self._object.get_world_pose()[0]
-        self._initial_object_phase = np.arctan2(self._initial_object_position[1], self._initial_object_position[0])
-        self._object_radius = np.linalg.norm(self._initial_object_position[:2])
-
-        self._running_scenario = True
-
-        self._joint_index = 0
-        self._lower_joint_limits = articulation.dof_properties["lower"]
-        self._upper_joint_limits = articulation.dof_properties["upper"]
-
-        # teleport robot to lower joint range
-        epsilon = 0.001
-        articulation.set_joint_positions(self._lower_joint_limits + epsilon)
-
-        self._derive_sinusoid_params(0)
-
-    def teardown_scenario(self):
-        self._time = 0.0
-        self._object = None
-        self._articulation = None
-        self._running_scenario = False
-
-        self._joint_index = 0
-        self._lower_joint_limits = None
-        self._upper_joint_limits = None
-
-        self._joint_time = 0
-        self._path_duration = 0
-        self._calculate_position = lambda t, x: 0
-        self._calculate_velocity = lambda t, x: 0
-
-    def update_scenario(self, step: float):
-        if not self._running_scenario:
+    def delete_rope(self):
+        """Remove the rope prims from the stage if they exist."""
+        if not self._rope_exists:
             return
 
-        self._time += step
+        stage = self._usd_context.get_stage()
+        if stage:
+            prim = stage.GetPrimAtPath(self._rope_root_path)
+            if prim and prim.IsValid():
+                stage.RemovePrim(self._rope_root_path)
+                carb.log_info("[RopeBuilder] Deleted rope prim hierarchy.")
 
-        x = self._object_radius * np.cos(self._initial_object_phase + self._time * self._object_frequency * 2 * np.pi)
-        y = self._object_radius * np.sin(self._initial_object_phase + self._time * self._object_frequency * 2 * np.pi)
-        z = self._initial_object_position[2]
+        self._rope_exists = False
 
-        self._object.set_world_pose(np.array([x, y, z]))
+    def rope_exists(self) -> bool:
+        return self._rope_exists
 
-        self._update_sinusoidal_joint_path(step)
+    def validate_parameters(self) -> bool:
+        return self._validate_params(self._params)
 
-    def _derive_sinusoid_params(self, joint_index: int):
-        # Derive the parameters of the joint target sinusoids for joint {joint_index}
-        start_position = self._lower_joint_limits[joint_index]
-
-        P_max = self._upper_joint_limits[joint_index] - start_position
-        V_max = self._max_joint_speed
-        T = P_max * np.pi / V_max
-
-        # T is the expected time of the joint path
-
-        self._path_duration = T
-        self._calculate_position = (
-            lambda time, path_duration: start_position
-            + -P_max / 2 * np.cos(time * 2 * np.pi / path_duration)
-            + P_max / 2
+    @staticmethod
+    def _validate_params(params: RopeParameters) -> bool:
+        """Basic sanity checks to catch common input mistakes."""
+        return all(
+            [
+                params.length > 0.0,
+                params.diameter > 0.0,
+                params.capsule_count > 1,
+                params.mass > 0.0,
+                params.joint_stiffness >= 0.0,
+                params.joint_damping >= 0.0,
+            ]
         )
-        self._calculate_velocity = lambda time, path_duration: V_max * np.sin(2 * np.pi * time / path_duration)
-
-    def _update_sinusoidal_joint_path(self, step):
-        # Update the target for the robot joints
-        self._joint_time += step
-
-        if self._joint_time > self._path_duration:
-            self._joint_time = 0
-            self._joint_index = (self._joint_index + 1) % self._articulation.num_dof
-            self._derive_sinusoid_params(self._joint_index)
-
-        joint_position_target = self._calculate_position(self._joint_time, self._path_duration)
-        joint_velocity_target = self._calculate_velocity(self._joint_time, self._path_duration)
-
-        action = ArticulationAction(
-            np.array([joint_position_target]),
-            np.array([joint_velocity_target]),
-            joint_indices=np.array([self._joint_index]),
-        )
-        self._articulation.apply_action(action)
