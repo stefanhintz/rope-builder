@@ -74,6 +74,8 @@ class RopeBuilderController:
         self._segment_paths: List[str] = []
         self._joint_paths: List[str] = []
         self._physics_scene_path = "/World/physicsScene"
+        self._start_anchor_path = f"{self._rope_root_path}/start_anchor"
+        self._end_anchor_path = f"{self._rope_root_path}/end_anchor"
 
     @property
     def parameters(self) -> RopeParameters:
@@ -120,6 +122,8 @@ class RopeBuilderController:
             self._segment_paths.append(segment_path)
             prev_segment_path = segment_path
 
+        self._create_anchors(stage)
+
         self._rope_exists = True
         return self._rope_root_path
 
@@ -138,6 +142,8 @@ class RopeBuilderController:
         self._rope_exists = False
         self._segment_paths = []
         self._joint_paths = []
+        self._start_anchor_path = f"{self._rope_root_path}/start_anchor"
+        self._end_anchor_path = f"{self._rope_root_path}/end_anchor"
 
     def rope_exists(self) -> bool:
         return self._rope_exists
@@ -257,3 +263,23 @@ class RopeBuilderController:
         """Return the cylindrical height so total length matches the desired segment length."""
         total = self._params.segment_length
         return max(total - 2.0 * radius, 1e-4)
+
+    def _create_anchors(self, stage):
+        """Create null Xforms at each end so plugs can be snapped on easily."""
+        if not self._segment_paths:
+            return
+
+        half = self._params.segment_length * 0.5
+        start_center = self._segment_center_position(0)
+        end_center = self._segment_center_position(self._params.segment_count - 1)
+
+        start_pos = start_center - Gf.Vec3d(half, 0.0, 0.0)
+        end_pos = end_center + Gf.Vec3d(half, 0.0, 0.0)
+
+        self._define_anchor(stage, self._start_anchor_path, start_pos)
+        self._define_anchor(stage, self._end_anchor_path, end_pos)
+
+    def _define_anchor(self, stage, path: str, position: Gf.Vec3d):
+        anchor_prim = UsdGeom.Xform.Define(stage, Sdf.Path(path))
+        anchor_prim.ClearXformOpOrder()
+        anchor_prim.AddTranslateOp().Set(position)
