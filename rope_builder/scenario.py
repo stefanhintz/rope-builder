@@ -156,7 +156,7 @@ class RopeBuilderController:
 
         scene = UsdPhysics.Scene.Define(stage, Sdf.Path(self._physics_scene_path))
         scene.CreateGravityDirectionAttr().Set(Gf.Vec3f(0, 0, -1))
-        scene.CreateGravityMagnitudeAttr().Set(981.0)
+        scene.CreateGravityMagnitudeAttr().Set(9.81)
 
     def _create_segment(self, stage, index: int) -> str:
         """Author the prims for an individual rope segment."""
