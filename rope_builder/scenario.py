@@ -135,6 +135,7 @@ class RopeBuilderController:
     @staticmethod
     def _validate_params(params: RopeParameters) -> bool:
         """Basic sanity checks to catch common input mistakes."""
+        segment_length = params.segment_length
         return all(
             [
                 params.length > 0.0,
@@ -143,6 +144,7 @@ class RopeBuilderController:
                 params.mass > 0.0,
                 params.joint_stiffness >= 0.0,
                 params.joint_damping >= 0.0,
+                segment_length > params.diameter,
             ]
         )
 
@@ -170,14 +172,14 @@ class RopeBuilderController:
         collision_path = segment_path.AppendPath("collision")
         collision = UsdGeom.Capsule.Define(stage, collision_path)
         collision.CreateRadiusAttr(radius)
-        collision.CreateHeightAttr(height)
+        collision.CreateHeightAttr(self._capsule_height(radius))
         collision.CreateAxisAttr(UsdGeom.Tokens.x)
         UsdPhysics.CollisionAPI.Apply(collision.GetPrim())
 
         visual_path = segment_path.AppendPath("visual")
         visual = UsdGeom.Cylinder.Define(stage, visual_path)
         visual.CreateRadiusAttr(radius * 0.95)
-        visual.CreateHeightAttr(height)
+        visual.CreateHeightAttr(self._capsule_height(radius))
         visual.CreateAxisAttr(UsdGeom.Tokens.x)
         visual.CreateDisplayColorAttr([(0.8, 0.4, 0.1)])
 
@@ -221,7 +223,7 @@ class RopeBuilderController:
             drive.CreateTargetVelocityAttr().Set(0.0)
             drive.CreateStiffnessAttr(self._params.joint_stiffness)
             drive.CreateDampingAttr(self._params.joint_damping)
-            drive.CreateMaxForceAttr(0.0)
+            drive.CreateMaxForceAttr(1e6)
 
         return str(joint_path)
 
@@ -231,3 +233,8 @@ class RopeBuilderController:
         start = -0.5 * self._params.length + 0.5 * spacing
         x = start + index * spacing
         return Gf.Vec3d(x, 0.0, 0.0)
+
+    def _capsule_height(self, radius: float) -> float:
+        """Return the cylindrical height so total length matches the desired segment length."""
+        total = self._params.segment_length
+        return max(total - 2.0 * radius, 1e-4)
