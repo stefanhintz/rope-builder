@@ -196,7 +196,7 @@ class RopeBuilderController:
     def _create_d6_joint(self, stage, joint_index: int, body0_path: str, body1_path: str) -> str:
         """Create a D6 joint connecting two neighboring segments."""
         joint_path = Sdf.Path(f"{self._rope_root_path}/joint_{joint_index:03d}")
-        joint_prim = stage.DefinePrim(joint_path, "D6Joint")
+        joint_prim = stage.DefinePrim(joint_path, "PhysicsJoint")
         joint = UsdPhysics.Joint(joint_prim)
         joint.CreateBody0Rel().SetTargets([body0_path])
         joint.CreateBody1Rel().SetTargets([body1_path])
@@ -205,11 +205,17 @@ class RopeBuilderController:
         joint.CreateLocalPos0Attr().Set(Gf.Vec3f(half_length, 0.0, 0.0))
         joint.CreateLocalPos1Attr().Set(Gf.Vec3f(-half_length, 0.0, 0.0))
 
-        physx_joint = PhysxSchema.PhysxJointAPI.Apply(joint_prim)
-        if physx_joint:
-            physx_joint.CreateJointTypeAttr().Set(PhysxSchema.Tokens.d6)
+        PhysxSchema.PhysxJointAPI.Apply(joint_prim)
 
-        for axis in ("linear", "angular"):
+        drive_axes = [
+            UsdPhysics.Tokens.transX,
+            UsdPhysics.Tokens.transY,
+            UsdPhysics.Tokens.transZ,
+            UsdPhysics.Tokens.rotX,
+            UsdPhysics.Tokens.rotY,
+            UsdPhysics.Tokens.rotZ,
+        ]
+        for axis in drive_axes:
             drive = UsdPhysics.DriveAPI.Apply(joint_prim, axis)
             drive.CreateTargetPositionAttr().Set(0.0)
             drive.CreateTargetVelocityAttr().Set(0.0)
