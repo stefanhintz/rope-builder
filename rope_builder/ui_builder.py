@@ -72,9 +72,6 @@ class UIBuilder:
         with CollapsableFrame("Actions", collapsed=False):
             with ui.VStack(style=get_style(), spacing=8, height=0):
                 self._create_btn = ui.Button("Create Rope", clicked_fn=self._on_create_rope)
-                self._update_btn = ui.Button(
-                    "Update Rope", clicked_fn=self._on_update_rope, enabled=self._controller.rope_exists()
-                )
                 self._delete_btn = ui.Button(
                     "Delete Rope", clicked_fn=self._on_delete_rope, enabled=self._controller.rope_exists()
                 )
@@ -143,23 +140,12 @@ class UIBuilder:
             return
 
         self._delete_btn.enabled = True
-        self._update_btn.enabled = True
         self._update_status(f"Rope prims initialized at {prim_path}.", warn=False)
 
     def _on_delete_rope(self):
         self._controller.delete_rope()
         self._delete_btn.enabled = False
-        self._update_btn.enabled = False
         self._update_status("Rope deleted.", warn=False)
-
-    def _on_update_rope(self):
-        try:
-            self._controller.update_rope()
-        except (RuntimeError, ValueError) as exc:
-            self._update_status(str(exc), warn=True)
-            return
-
-        self._update_status("Updated rope parameters.", warn=False)
 
     def _reset_ui(self):
         params = self._controller.parameters
@@ -172,8 +158,6 @@ class UIBuilder:
 
         if hasattr(self, "_delete_btn"):
             self._delete_btn.enabled = self._controller.rope_exists()
-        if hasattr(self, "_update_btn"):
-            self._update_btn.enabled = self._controller.rope_exists()
 
         self._update_status("Ready to create a rope.", warn=False)
 
