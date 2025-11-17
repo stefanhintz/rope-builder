@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Tuple
 
 import carb
 import omni.usd
@@ -33,6 +33,10 @@ class RopeParameters:
     mass: float = 1.0  # kilograms
     joint_stiffness: float = 500.0  # N*m/rad equivalent (placeholder)
     joint_damping: float = 5.0  # N*m*s/rad equivalent (placeholder)
+    visual_radius_scale: float = 0.95
+    visual_color_r: float = 0.8
+    visual_color_g: float = 0.4
+    visual_color_b: float = 0.1
 
     @property
     def segment_length(self) -> float:
@@ -45,6 +49,13 @@ class RopeParameters:
         if self.segment_count <= 0:
             return 0.0
         return self.mass / self.segment_count
+
+    @property
+    def visual_color(self) -> Tuple[float, float, float]:
+        return (self.visual_color_r, self.visual_color_g, self.visual_color_b)
+
+
+DEFAULT_PARAMS = RopeParameters()
 
 
 class RopeBuilderController:
@@ -136,10 +147,9 @@ class RopeBuilderController:
 
     def _ensure_parameter_defaults(self):
         """Fill in any missing attributes when hot-reloading older state."""
-        defaults = RopeParameters()
-        for field in defaults.__dataclass_fields__.keys():
+        for field in DEFAULT_PARAMS.__dataclass_fields__.keys():
             if not hasattr(self._params, field):
-                setattr(self._params, field, getattr(defaults, field))
+                setattr(self._params, field, getattr(DEFAULT_PARAMS, field))
 
     @staticmethod
     def _validate_params(params: RopeParameters) -> bool:
