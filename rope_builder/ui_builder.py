@@ -120,7 +120,11 @@ class UIBuilder:
         params = self._controller.parameters
         setattr(params, key, value)
         self._controller.set_parameters(params)
-        self._update_status(f"Updated {key.replace('_', ' ')}.", warn=not self._controller.validate_parameters())
+        hint = self._segment_limit_hint() if key in {"segment_count", "length", "diameter"} else ""
+        status_msg = f"Updated {key.replace('_', ' ')}."
+        if hint:
+            status_msg += f" {hint}"
+        self._update_status(status_msg, warn=not self._controller.validate_parameters())
 
         if changed and model is not None:
             self._syncing_models = True
@@ -179,3 +183,15 @@ class UIBuilder:
             updated_value = int(round(updated_value))
 
         return updated_value, updated_value != value
+
+    def _segment_limit_hint(self) -> str:
+        """Return a short hint about effective segment limits for the current dimensions."""
+        params = self._controller.parameters
+        if params.diameter <= 0.0:
+            return ""
+
+        approx_max = max(int(params.length / params.diameter), 1)
+        return (
+            f"Segment length ~{params.segment_length:.4f} m; "
+            f"~{approx_max} segments before diameter overlap."
+        )
