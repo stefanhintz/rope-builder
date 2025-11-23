@@ -16,6 +16,7 @@ import omni.ui as ui
 from isaacsim.gui.components.element_wrappers import CollapsableFrame
 from isaacsim.gui.components.ui_utils import get_style
 from omni.usd import StageEventType
+import math
 
 from .scenario import RopeBuilderController, RopeParameters
 
@@ -32,6 +33,7 @@ class UIBuilder:
         self._param_models = {}
         self._param_constraints = {}
         self._syncing_models = False
+        self._segment_slider = None
 
     ###################################################################################
     #           The Functions Below Are Called Automatically By extension.py
@@ -64,7 +66,7 @@ class UIBuilder:
             with ui.VStack(style=get_style(), spacing=8, height=0):
                 self._build_float_field("Length (m)", "length", min_value=0.1, step=0.05)
                 self._build_float_field("Diameter (m)", "diameter", min_value=0.005, step=0.005)
-                self._build_int_field("Segments", "segment_count", min_value=2, step=1)
+                self._build_segment_slider("Segments", "segment_count", min_value=2)
                 self._build_float_field("Mass (kg)", "mass", min_value=0.01, step=0.1)
                 self._build_float_field("Joint Stiffness", "joint_stiffness", min_value=0.0, step=10.0)
                 self._build_float_field("Joint Damping", "joint_damping", min_value=0.0, step=1.0)
@@ -110,6 +112,19 @@ class UIBuilder:
 
         self._param_models[param_key] = model
 
+    def _build_segment_slider(self, label: str, param_key: str, min_value: int):
+        params = self._controller.parameters
+        model = ui.SimpleIntModel(getattr(params, param_key))
+        model.add_value_changed_fn(lambda m, key=param_key: self._on_param_change(key, m.as_int))
+
+        self._param_constraints[param_key] = {"min": min_value, "type": int, "max_fn": self._segment_max_limit}
+
+        with ui.HStack(height=0):
+            ui.Label(label, width=120, style=get_style())
+            self._segment_slider = ui.IntSlider(model=model, min=min_value, max=self._segment_max_limit())
+
+        self._param_models[param_key] = model
+
     def _on_param_change(self, key: str, value):
         if self._syncing_models:
             return
@@ -120,11 +135,11 @@ class UIBuilder:
         params = self._controller.parameters
         setattr(params, key, value)
         self._controller.set_parameters(params)
-        hint = self._segment_limit_hint() if key in {"segment_count", "length", "diameter"} else ""
         status_msg = f"Updated {key.replace('_', ' ')}."
-        if hint:
-            status_msg += f" {hint}"
         self._update_status(status_msg, warn=not self._controller.validate_parameters())
+
+        if key in {"length", "diameter"}:
+            self._refresh_segment_slider_limit(clamp_value=True)
 
         if changed and model is not None:
             self._syncing_models = True
@@ -163,6 +178,7 @@ class UIBuilder:
         if hasattr(self, "_delete_btn"):
             self._delete_btn.enabled = self._controller.rope_exists()
 
+        self._refresh_segment_slider_limit(clamp_value=True)
         self._update_status("Ready to create a rope.", warn=False)
 
     def _update_status(self, message: str, warn: bool):
@@ -182,16 +198,43 @@ class UIBuilder:
         if constraint.get("type") is int:
             updated_value = int(round(updated_value))
 
+        max_fn = constraint.get("max_fn")
+        max_value = constraint.get("max")
+        if max_fn:
+            max_value = max_fn()
+
+        if max_value is not None:
+            updated_value = min(updated_value, max_value)
+
         return updated_value, updated_value != value
 
-    def _segment_limit_hint(self) -> str:
-        """Return a short hint about effective segment limits for the current dimensions."""
+    def _segment_max_limit(self) -> int:
+        """Compute the maximum segments allowed so each is longer than the diameter."""
         params = self._controller.parameters
         if params.diameter <= 0.0:
-            return ""
+            return 2
 
-        approx_max = max(int(params.length / params.diameter), 1)
-        return (
-            f"Segment length ~{params.segment_length:.4f} m; "
-            f"~{approx_max} segments before diameter overlap."
-        )
+        ratio = params.length / params.diameter
+        max_segments = int(math.floor(ratio - 1e-6))
+        return max(max_segments, 2)
+
+    def _refresh_segment_slider_limit(self, clamp_value: bool = False):
+        if not self._segment_slider:
+            return
+
+        max_segments = self._segment_max_limit()
+        if hasattr(self._segment_slider, "max"):
+            self._segment_slider.max = max_segments
+        if hasattr(self._segment_slider, "min"):
+            self._segment_slider.min = 2
+
+        if clamp_value:
+            model = self._param_models.get("segment_count")
+            if model and model.as_int > max_segments:
+                new_value = max_segments
+                self._syncing_models = True
+                try:
+                    model.set_value(new_value)
+                finally:
+                    self._syncing_models = False
+                self._on_param_change("segment_count", new_value)
