@@ -20,7 +20,7 @@ from typing import List, Tuple
 
 import carb
 import omni.usd
-from pxr import Gf, PhysxSchema, Sdf, UsdGeom, UsdPhysics
+from pxr import Gf, PhysxSchema, Sdf, UsdGeom, UsdPhysics, UsdShade
 
 
 @dataclass
@@ -37,6 +37,8 @@ class RopeParameters:
     visual_color_r: float = 0.8
     visual_color_g: float = 0.4
     visual_color_b: float = 0.1
+    visual_metallic: float = 0.0
+    visual_roughness: float = 0.7
 
     @property
     def segment_length(self) -> float:
@@ -76,6 +78,8 @@ class RopeBuilderController:
         self._physics_scene_path = "/World/physicsScene"
         self._start_anchor_path = f"{self._rope_root_path}/start_anchor"
         self._end_anchor_path = f"{self._rope_root_path}/end_anchor"
+        self._material_path = f"{self._rope_root_path}/Materials/Default"
+        self._material_shader_path = f"{self._material_path}/PreviewSurface"
 
     @property
     def parameters(self) -> RopeParameters:
@@ -84,6 +88,7 @@ class RopeBuilderController:
     def set_parameters(self, params: RopeParameters):
         self._params = params
         self._ensure_parameter_defaults()
+        self._update_material_values()
         carb.log_info(f"[RopeBuilder] Updated parameters: {self._params}")
 
     def create_rope(self) -> str:
@@ -109,6 +114,7 @@ class RopeBuilderController:
         self._ensure_physics_scene(stage)
         root_prim = UsdGeom.Xform.Define(stage, Sdf.Path(self._rope_root_path))
         root_prim.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.0))
+        self._get_or_create_material(stage)
 
         self._segment_paths = []
         self._joint_paths = []
@@ -147,6 +153,10 @@ class RopeBuilderController:
 
     def rope_exists(self) -> bool:
         return self._rope_exists
+
+    def refresh_visual_material(self):
+        """Update the shared material with current visual parameters."""
+        self._update_material_values()
 
     def validate_parameters(self) -> bool:
         return self._validate_params(self._params)
@@ -201,12 +211,15 @@ class RopeBuilderController:
         UsdGeom.Imageable(collision.GetPrim()).MakeInvisible()
 
         visual_path = segment_path.AppendPath("visual")
-        visual = UsdGeom.Cylinder.Define(stage, visual_path)
-        visual_radius = max(radius * self._params.visual_radius_scale, 1e-4)
+        visual = UsdGeom.Capsule.Define(stage, visual_path)
+        # Keep the same radius as collision and extend the cylindrical part so neighboring
+        # hemispheres coincide at the joint midpoint.
+        visual_radius = max(radius, 1e-4)
         visual.CreateRadiusAttr(visual_radius)
-        visual.CreateHeightAttr(self._params.segment_length)
+        visual_height = max(self._params.segment_length, 1e-4)
+        visual.CreateHeightAttr(visual_height)
         visual.CreateAxisAttr(UsdGeom.Tokens.x)
-        visual.CreateDisplayColorAttr([self._params.visual_color])
+        self._bind_visual_material(stage, visual.GetPrim())
 
         rigid_prim = xform.GetPrim()
         UsdPhysics.RigidBodyAPI.Apply(rigid_prim)
@@ -263,6 +276,38 @@ class RopeBuilderController:
         """Return the cylindrical height so total length matches the desired segment length."""
         total = self._params.segment_length
         return max(total - 2.0 * radius, 1e-4)
+
+    def _bind_visual_material(self, stage, prim):
+        material, _ = self._get_or_create_material(stage)
+        UsdShade.MaterialBindingAPI.Apply(prim).Bind(material)
+
+    def _get_or_create_material(self, stage):
+        material = UsdShade.Material.Get(stage, Sdf.Path(self._material_path))
+        shader = UsdShade.Shader.Get(stage, Sdf.Path(self._material_shader_path))
+
+        if not material:
+            material = UsdShade.Material.Define(stage, Sdf.Path(self._material_path))
+        if not shader:
+            shader = UsdShade.Shader.Define(stage, Sdf.Path(self._material_shader_path))
+            shader.CreateIdAttr("UsdPreviewSurface")
+            material.CreateSurfaceOutput().ConnectToSource(shader, "surface")
+
+        self._update_material_values(shader)
+        return material, shader
+
+    def _update_material_values(self, shader=None):
+        stage = self._usd_context.get_stage()
+        if stage is None:
+            return
+
+        if shader is None:
+            shader = UsdShade.Shader.Get(stage, Sdf.Path(self._material_shader_path))
+            if not shader:
+                return
+
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(self._params.visual_color)
+        shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(self._params.visual_metallic)
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(self._params.visual_roughness)
 
     def _create_anchors(self, stage):
         """Create null Xforms at each end so plugs can be snapped on easily."""

@@ -67,6 +67,11 @@ class UIBuilder:
                 self._build_float_field("Length (m)", "length", min_value=0.1, step=0.05)
                 self._build_float_field("Diameter (m)", "diameter", min_value=0.005, step=0.005)
                 self._build_segment_slider("Segments", "segment_count", min_value=2)
+                self._build_float_field("Color R", "visual_color_r", min_value=0.0, max_value=1.0, step=0.05)
+                self._build_float_field("Color G", "visual_color_g", min_value=0.0, max_value=1.0, step=0.05)
+                self._build_float_field("Color B", "visual_color_b", min_value=0.0, max_value=1.0, step=0.05)
+                self._build_float_field("Roughness", "visual_roughness", min_value=0.0, max_value=1.0, step=0.05)
+                self._build_float_field("Metallic", "visual_metallic", min_value=0.0, max_value=1.0, step=0.05)
                 self._build_float_field("Mass (kg)", "mass", min_value=0.01, step=0.1)
                 self._build_float_field("Joint Stiffness", "joint_stiffness", min_value=0.0, step=10.0)
                 self._build_float_field("Joint Damping", "joint_damping", min_value=0.0, step=1.0)
@@ -86,12 +91,12 @@ class UIBuilder:
     #                             UI CALLBACKS AND HELPERS
     ###################################################################################
 
-    def _build_float_field(self, label: str, param_key: str, min_value: float, step: float):
+    def _build_float_field(self, label: str, param_key: str, min_value: float, step: float, max_value: float = None):
         params = self._controller.parameters
         model = ui.SimpleFloatModel(getattr(params, param_key))
         model.add_value_changed_fn(lambda m, key=param_key: self._on_param_change(key, m.as_float))
 
-        self._param_constraints[param_key] = {"min": min_value, "type": float}
+        self._param_constraints[param_key] = {"min": min_value, "type": float, "max": max_value}
 
         with ui.HStack(height=0):
             ui.Label(label, width=120, style=get_style())
@@ -140,6 +145,8 @@ class UIBuilder:
 
         if key in {"length", "diameter"}:
             self._refresh_segment_slider_limit(clamp_value=True)
+        if key in {"visual_color_r", "visual_color_g", "visual_color_b", "visual_roughness", "visual_metallic"}:
+            self._controller.refresh_visual_material()
 
         if changed and model is not None:
             self._syncing_models = True
