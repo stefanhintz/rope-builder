@@ -290,7 +290,13 @@ class RopeBuilderController:
         if not shader:
             shader = UsdShade.Shader.Define(stage, Sdf.Path(self._material_shader_path))
             shader.CreateIdAttr("UsdPreviewSurface")
-            material.CreateSurfaceOutput().ConnectToSource(shader, "surface")
+            shader.CreateOutput("surface", Sdf.ValueTypeNames.Token)
+
+        # Ensure the material output exists and is wired to the shader output.
+        surface_output = material.CreateSurfaceOutput()
+        surface_output.ConnectToSource(
+            shader.ConnectableAPI(), "surface", UsdShade.AttributeType.Output
+        )
 
         self._update_material_values(shader)
         return material, shader
