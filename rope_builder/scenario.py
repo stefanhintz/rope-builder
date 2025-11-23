@@ -201,13 +201,10 @@ class RopeBuilderController:
         UsdGeom.Imageable(collision.GetPrim()).MakeInvisible()
 
         visual_path = segment_path.AppendPath("visual")
-        visual = UsdGeom.Capsule.Define(stage, visual_path)
+        visual = UsdGeom.Cylinder.Define(stage, visual_path)
         visual_radius = max(radius * self._params.visual_radius_scale, 1e-4)
         visual.CreateRadiusAttr(visual_radius)
-        # Make the visual slightly longer and rounded so adjacent segments overlap visually.
-        visual_length = self._params.segment_length + visual_radius * 0.5
-        visual_height = max(visual_length - 2.0 * visual_radius, 1e-4)
-        visual.CreateHeightAttr(visual_height)
+        visual.CreateHeightAttr(self._params.segment_length)
         visual.CreateAxisAttr(UsdGeom.Tokens.x)
         visual.CreateDisplayColorAttr([self._params.visual_color])
 
