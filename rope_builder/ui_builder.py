@@ -40,6 +40,10 @@ class UIBuilder:
         self._joint_frame = None
         self._joint_slider_models = {}
         self._toggle_vis_btn = None
+        self._cable_name_model = ui.SimpleStringModel("cable")
+        self._import_path_model = ui.SimpleStringModel("/World/cable")
+        self._active_path_model = ui.SimpleStringModel("")
+        self._known_cables_model = ui.SimpleStringModel("No cables yet.")
 
     ###################################################################################
     #           The Functions Below Are Called Automatically By extension.py
@@ -57,11 +61,13 @@ class UIBuilder:
 
     def on_stage_event(self, event):
         if event.type == int(StageEventType.OPENED):
-            self._controller.delete_rope()
+            for path in list(self._controller.list_cable_paths()):
+                self._controller.delete_rope(path)
             self._reset_ui()
 
     def cleanup(self):
-        self._controller.delete_rope()
+        for path in list(self._controller.list_cable_paths()):
+            self._controller.delete_rope(path)
 
     def build_ui(self):
         """Called when the window is (re)built."""
@@ -92,6 +98,18 @@ class UIBuilder:
 
         with CollapsableFrame("Actions", collapsed=False):
             with ui.VStack(style=get_style(), spacing=8, height=0):
+                with ui.HStack(height=0):
+                    ui.Label("Cable name", width=140, style=get_style())
+                    ui.StringField(model=self._cable_name_model)
+                with ui.HStack(height=0):
+                    ui.Label("Import root path", width=140, style=get_style())
+                    ui.StringField(model=self._import_path_model)
+                    ui.Button("Import cable", clicked_fn=self._on_import_rope)
+                with ui.HStack(height=0):
+                    ui.Label("Active cable", width=140, style=get_style())
+                    ui.StringField(model=self._active_path_model)
+                    ui.Button("Set active", clicked_fn=self._on_set_active_cable)
+                ui.Label("", word_wrap=True, model=self._known_cables_model)
                 self._create_btn = ui.Button("Create Cable", clicked_fn=self._on_create_rope)
                 self._delete_btn = ui.Button(
                     "Delete Cable", clicked_fn=self._on_delete_rope, enabled=self._controller.rope_exists()
@@ -186,11 +204,14 @@ class UIBuilder:
 
     def _on_create_rope(self):
         try:
-            prim_path = self._controller.create_rope()
+            name = self._model_string(self._cable_name_model, "cable")
+            prim_path = self._controller.create_rope(name)
         except (RuntimeError, ValueError) as exc:
             self._update_status(str(exc), warn=True)
             return
 
+        self._active_path_model.set_value(prim_path)
+        self._refresh_known_cables_label()
         self._delete_btn.enabled = True
         self._reset_joint_btn.enabled = True
         self._subscription_btn.enabled = True
@@ -202,14 +223,60 @@ class UIBuilder:
 
     def _on_delete_rope(self):
         self._controller.delete_rope()
-        self._delete_btn.enabled = False
-        self._reset_joint_btn.enabled = False
-        self._subscription_btn.enabled = False
-        self._toggle_vis_btn.enabled = False
+        active_exists = self._controller.rope_exists()
+        self._delete_btn.enabled = active_exists
+        self._reset_joint_btn.enabled = active_exists
+        self._subscription_btn.enabled = active_exists
+        self._toggle_vis_btn.enabled = active_exists
+        self._active_path_model.set_value(self._controller.active_cable_path() or "")
+        self._refresh_known_cables_label()
         self._refresh_subscription_btn()
         self._refresh_visibility_btn()
         self._clear_joint_controls()
         self._update_status("Cable deleted.", warn=False)
+
+    def _on_import_rope(self):
+        path = self._model_string(self._import_path_model, "/World/cable")
+        try:
+            prim_path = self._controller.import_cable(path)
+        except (RuntimeError, ValueError) as exc:
+            self._update_status(str(exc), warn=True)
+            return
+        self._active_path_model.set_value(prim_path)
+        self._refresh_known_cables_label()
+        self._delete_btn.enabled = True
+        self._reset_joint_btn.enabled = True
+        self._subscription_btn.enabled = True
+        self._toggle_vis_btn.enabled = True
+        self._refresh_subscription_btn()
+        self._refresh_visibility_btn()
+        self._build_joint_controls()
+        self._update_status(f"Imported cable at {prim_path}.", warn=False)
+
+    def _on_set_active_cable(self):
+        path = self._model_string(self._active_path_model, "")
+        if not path:
+            self._update_status("Enter a cable root path to activate.", warn=True)
+            return
+        if not self._controller.set_active_cable(path):
+            self._update_status(f"No known cable at {path}.", warn=True)
+            return
+        self._refresh_known_cables_label()
+        self._delete_btn.enabled = True
+        self._reset_joint_btn.enabled = True
+        self._subscription_btn.enabled = True
+        self._toggle_vis_btn.enabled = True
+        self._refresh_subscription_btn()
+        self._refresh_visibility_btn()
+        self._build_joint_controls()
+        self._update_status(f"Active cable set to {path}.", warn=False)
+
+    def _model_string(self, model, default: str = "") -> str:
+        if hasattr(model, "as_string"):
+            return model.as_string
+        if hasattr(model, "get_value_as_string"):
+            return model.get_value_as_string()
+        return default
 
     def _on_toggle_subscription(self):
         if not self._controller.rope_exists():
@@ -246,6 +313,15 @@ class UIBuilder:
         msg = "Showing spline (collisions hidden)." if show_curve else "Showing collisions (spline hidden)."
         self._update_status(msg, warn=False)
 
+    def _refresh_known_cables_label(self):
+        paths = self._controller.list_cable_paths()
+        if not paths:
+            self._known_cables_model.set_value("No cables yet.")
+        else:
+            active = self._controller.active_cable_path()
+            text = "Known cables: " + ", ".join([p + ("*" if p == active else "") for p in paths])
+            self._known_cables_model.set_value(text)
+
     def _reset_ui(self):
         params = self._controller.parameters
         for key, model in self._param_models.items():
@@ -262,6 +338,8 @@ class UIBuilder:
             self._subscription_btn.enabled = exists
             self._toggle_vis_btn.enabled = exists
 
+        self._active_path_model.set_value(self._controller.active_cable_path() or "")
+        self._refresh_known_cables_label()
         self._refresh_segment_slider_limit(clamp_value=True)
         self._refresh_subscription_btn()
         self._refresh_visibility_btn()
