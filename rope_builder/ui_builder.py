@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
+
 import omni.ui as ui
 from isaacsim.gui.components.element_wrappers import CollapsableFrame
 from isaacsim.gui.components.ui_utils import get_style
 from omni.usd import StageEventType
-import math
 
-from .scenario import RopeBuilderController, RopeParameters
+from .scenario import ROT_AXES, RopeBuilderController
 
 
 class UIBuilder:
@@ -29,11 +30,15 @@ class UIBuilder:
         self.wrapped_ui_elements = []
 
         self._controller = RopeBuilderController()
-        self._status_model = ui.SimpleStringModel("No rope created.")
+        self._status_model = ui.SimpleStringModel("No cable created.")
         self._param_models = {}
         self._param_constraints = {}
         self._syncing_models = False
         self._segment_slider = None
+        self._subscription_btn = None
+        self._reset_joint_btn = None
+        self._joint_frame = None
+        self._joint_slider_models = {}
 
     ###################################################################################
     #           The Functions Below Are Called Automatically By extension.py
@@ -62,23 +67,47 @@ class UIBuilder:
         self._param_models = {}
         self._param_constraints = {}
 
-        with CollapsableFrame("Rope Parameters", collapsed=False):
+        with CollapsableFrame("Cable Parameters", collapsed=False):
             with ui.VStack(style=get_style(), spacing=8, height=0):
                 self._build_float_field("Length (m)", "length", min_value=0.1, step=0.05)
-                self._build_float_field("Diameter (m)", "diameter", min_value=0.005, step=0.005)
+                self._build_float_field("Radius (m)", "radius", min_value=0.001, step=0.001)
                 self._build_segment_slider("Segments", "segment_count", min_value=2)
-                self._build_float_field("Mass (kg)", "mass", min_value=0.01, step=0.1)
-                self._build_float_field("Joint Stiffness", "joint_stiffness", min_value=0.0, step=10.0)
-                self._build_float_field("Joint Damping", "joint_damping", min_value=0.0, step=1.0)
+                self._build_float_field("Total Mass (kg)", "mass", min_value=0.01, step=0.05)
+
+        with CollapsableFrame("Joint Limits (degrees)", collapsed=False):
+            with ui.VStack(style=get_style(), spacing=8, height=0):
+                self._build_float_field("rotX low", "rot_x_low", min_value=-180.0, step=1.0)
+                self._build_float_field("rotX high", "rot_x_high", min_value=-180.0, step=1.0)
+                self._build_float_field("rotY low", "rot_y_low", min_value=-180.0, step=1.0)
+                self._build_float_field("rotY high", "rot_y_high", min_value=-180.0, step=1.0)
+                self._build_float_field("rotZ low", "rot_z_low", min_value=-180.0, step=1.0)
+                self._build_float_field("rotZ high", "rot_z_high", min_value=-180.0, step=1.0)
+
+        with CollapsableFrame("Drive Settings", collapsed=False):
+            with ui.VStack(style=get_style(), spacing=8, height=0):
+                self._build_float_field("Stiffness", "drive_stiffness", min_value=0.0, step=10.0)
+                self._build_float_field("Damping", "drive_damping", min_value=0.0, step=1.0)
+                self._build_float_field("Max Force", "drive_max_force", min_value=0.0, step=10.0)
 
         with CollapsableFrame("Actions", collapsed=False):
             with ui.VStack(style=get_style(), spacing=8, height=0):
-                self._create_btn = ui.Button("Create Rope", clicked_fn=self._on_create_rope)
+                self._create_btn = ui.Button("Create Cable", clicked_fn=self._on_create_rope)
                 self._delete_btn = ui.Button(
-                    "Delete Rope", clicked_fn=self._on_delete_rope, enabled=self._controller.rope_exists()
+                    "Delete Cable", clicked_fn=self._on_delete_rope, enabled=self._controller.rope_exists()
+                )
+                self._subscription_btn = ui.Button(
+                    "Subscribe spline update", clicked_fn=self._on_toggle_subscription, enabled=False
+                )
+                self._reset_joint_btn = ui.Button(
+                    "Reset joint targets", clicked_fn=self._on_reset_joints, enabled=False
                 )
                 ui.Label("Status:", style=get_style())
                 ui.Label("", word_wrap=True, model=self._status_model)
+
+        with CollapsableFrame("Joint Controls", collapsed=False):
+            self._joint_frame = ui.Frame()
+            with self._joint_frame:
+                ui.Label("Create a cable to edit joint drive targets.", style=get_style())
 
         self._reset_ui()
 
@@ -94,7 +123,7 @@ class UIBuilder:
         self._param_constraints[param_key] = {"min": min_value, "type": float, "max": max_value}
 
         with ui.HStack(height=0):
-            ui.Label(label, width=120, style=get_style())
+            ui.Label(label, width=140, style=get_style())
             ui.FloatField(model=model)
 
         self._param_models[param_key] = model
@@ -107,7 +136,7 @@ class UIBuilder:
         self._param_constraints[param_key] = {"min": min_value, "type": int}
 
         with ui.HStack(height=0):
-            ui.Label(label, width=120, style=get_style())
+            ui.Label(label, width=140, style=get_style())
             ui.IntField(model=model)
 
         self._param_models[param_key] = model
@@ -120,7 +149,7 @@ class UIBuilder:
         self._param_constraints[param_key] = {"min": min_value, "type": int, "max_fn": self._segment_max_limit}
 
         with ui.HStack(height=0):
-            ui.Label(label, width=120, style=get_style())
+            ui.Label(label, width=140, style=get_style())
             self._segment_slider = ui.IntSlider(model=model, min=min_value, max=self._segment_max_limit())
 
         self._param_models[param_key] = model
@@ -138,10 +167,8 @@ class UIBuilder:
         status_msg = f"Updated {key.replace('_', ' ')}."
         self._update_status(status_msg, warn=not self._controller.validate_parameters())
 
-        if key in {"length", "diameter"}:
+        if key in {"length", "radius"}:
             self._refresh_segment_slider_limit(clamp_value=True)
-        if key in {"visual_color_r", "visual_color_g", "visual_color_b", "visual_roughness", "visual_metallic"}:
-            self._controller.refresh_visual_material()
 
         if changed and model is not None:
             self._syncing_models = True
@@ -161,12 +188,46 @@ class UIBuilder:
             return
 
         self._delete_btn.enabled = True
-        self._update_status(f"Rope prims initialized at {prim_path}.", warn=False)
+        self._reset_joint_btn.enabled = True
+        self._subscription_btn.enabled = True
+        self._refresh_subscription_btn()
+        self._build_joint_controls()
+        self._update_status(f"Cable prims initialized at {prim_path}.", warn=False)
 
     def _on_delete_rope(self):
         self._controller.delete_rope()
         self._delete_btn.enabled = False
-        self._update_status("Rope deleted.", warn=False)
+        self._reset_joint_btn.enabled = False
+        self._subscription_btn.enabled = False
+        self._refresh_subscription_btn()
+        self._clear_joint_controls()
+        self._update_status("Cable deleted.", warn=False)
+
+    def _on_toggle_subscription(self):
+        if not self._controller.rope_exists():
+            self._update_status("Create a cable before subscribing.", warn=True)
+            return
+
+        try:
+            if self._controller.curve_subscription_active():
+                self._controller.stop_curve_updates()
+                self._update_status("Stopped spline subscription.", warn=False)
+            else:
+                self._controller.start_curve_updates()
+                self._update_status("Spline now updates from segment positions.", warn=False)
+        except (RuntimeError, ValueError) as exc:
+            self._update_status(str(exc), warn=True)
+
+        self._refresh_subscription_btn()
+
+    def _on_reset_joints(self):
+        self._controller.reset_joint_drive_targets()
+        data = {info.get("index"): info for info in self._controller.get_joint_control_data()}
+        for (joint_idx, axis), model in self._joint_slider_models.items():
+            limits = data.get(joint_idx, {}).get("limits", {})
+            low, high = limits.get(axis, (-180.0, 180.0))
+            if model and low <= 0.0 <= high:
+                model.set_value(0.0)
 
     def _reset_ui(self):
         params = self._controller.parameters
@@ -178,10 +239,15 @@ class UIBuilder:
                 model.set_value(int(value))
 
         if hasattr(self, "_delete_btn"):
-            self._delete_btn.enabled = self._controller.rope_exists()
+            exists = self._controller.rope_exists()
+            self._delete_btn.enabled = exists
+            self._reset_joint_btn.enabled = exists
+            self._subscription_btn.enabled = exists
 
         self._refresh_segment_slider_limit(clamp_value=True)
-        self._update_status("Ready to create a rope.", warn=False)
+        self._refresh_subscription_btn()
+        self._build_joint_controls()
+        self._update_status("Ready to create a cable.", warn=False)
 
     def _update_status(self, message: str, warn: bool):
         prefix = "Warning: " if warn else ""
@@ -211,12 +277,13 @@ class UIBuilder:
         return updated_value, updated_value != value
 
     def _segment_max_limit(self) -> int:
-        """Compute the maximum segments allowed so each is longer than the diameter."""
+        """Compute the maximum segments allowed so each is longer than two radii."""
         params = self._controller.parameters
-        if params.diameter <= 0.0:
+        if params.radius <= 0.0:
             return 2
 
-        ratio = params.length / params.diameter
+        # Require each segment length to exceed two radii so the collider is valid.
+        ratio = params.length / (params.radius * 2.0)
         max_segments = int(math.floor(ratio - 1e-6))
         return max(max_segments, 2)
 
@@ -240,3 +307,54 @@ class UIBuilder:
                 finally:
                     self._syncing_models = False
                 self._on_param_change("segment_count", new_value)
+
+    def _refresh_subscription_btn(self):
+        if not self._subscription_btn:
+            return
+        subscribed = self._controller.curve_subscription_active()
+        self._subscription_btn.text = "Unsubscribe spline update" if subscribed else "Subscribe spline update"
+        self._subscription_btn.enabled = self._controller.rope_exists()
+
+    def _build_joint_controls(self):
+        if not self._joint_frame:
+            return
+
+        self._joint_frame.clear()
+        self._joint_slider_models = {}
+        data = self._controller.get_joint_control_data()
+
+        with self._joint_frame:
+            if not data:
+                ui.Label("Create a cable to edit joint drive targets.", style=get_style())
+                return
+
+            with ui.VStack(style=get_style(), spacing=6, height=0):
+                for info in data:
+                    idx = info.get("index", 0)
+                    limits = info.get("limits", {})
+                    targets = info.get("targets", {})
+                    ui.Label(f"Joint {idx}", style=get_style())
+                    for axis in ROT_AXES:
+                        low, high = limits.get(axis, (-180.0, 180.0))
+                        model = ui.SimpleFloatModel(targets.get(axis, 0.0))
+                        model.add_value_changed_fn(
+                            lambda m, i=idx, ax=axis: self._on_joint_slider_changed(i, ax, m.as_float)
+                        )
+                        with ui.HStack(height=0):
+                            ui.Label(f"{axis}", width=50, style=get_style())
+                            ui.FloatSlider(min=low, max=high, model=model)
+                        self._joint_slider_models[(idx, axis)] = model
+
+    def _clear_joint_controls(self):
+        if not self._joint_frame:
+            return
+        self._joint_frame.clear()
+        self._joint_slider_models = {}
+        with self._joint_frame:
+            ui.Label("Create a cable to edit joint drive targets.", style=get_style())
+
+    def _on_joint_slider_changed(self, joint_index: int, axis: str, value: float):
+        clamped = self._controller.set_joint_drive_target(joint_index, axis, value)
+        model = self._joint_slider_models.get((joint_index, axis))
+        if model and abs(model.as_float - clamped) > 1e-6:
+            model.set_value(clamped)

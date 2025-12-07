@@ -16,108 +16,122 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 import carb
+import omni.kit.app
 import omni.usd
-from pxr import Gf, PhysxSchema, Sdf, UsdGeom, UsdPhysics, UsdShade
+from pxr import Gf, PhysxSchema, Sdf, Usd, UsdGeom, UsdPhysics, Vt
+
+# Rotational and translational axes used by D6 joints.
+ROT_AXES = ("rotX", "rotY", "rotZ")
+TRANS_AXES = ("transX", "transY", "transZ")
 
 
 @dataclass
 class RopeParameters:
-    """Container describing the rope layout and physical properties."""
+    """Container describing the cable layout and physical properties."""
 
-    length: float = 2.0  # meters
-    diameter: float = 0.05  # meters
-    segment_count: int = 10
-    mass: float = 1.0  # kilograms
-    joint_stiffness: float = 500.0  # N*m/rad equivalent (placeholder)
-    joint_damping: float = 5.0  # N*m*s/rad equivalent (placeholder)
-    visual_radius_scale: float = 0.95
-    visual_color_r: float = 0.8
-    visual_color_g: float = 0.4
-    visual_color_b: float = 0.1
-    visual_metallic: float = 0.0
-    visual_roughness: float = 0.7
+    length: float = 1.0  # meters
+    radius: float = 0.01  # meters
+    segment_count: int = 8
+    mass: float = 1.0  # kilograms total
+    rot_x_low: float = -30.0  # degrees
+    rot_x_high: float = 30.0
+    rot_y_low: float = -30.0
+    rot_y_high: float = 30.0
+    rot_z_low: float = -30.0
+    rot_z_high: float = 30.0
+    drive_stiffness: float = 1200.0
+    drive_damping: float = 70.0
+    drive_max_force: float = 200.0
+    curve_width_scale: float = 2.0  # multiplier for visual curve width (radius * scale)
 
     @property
     def segment_length(self) -> float:
         if self.segment_count <= 0:
             return 0.0
-        return self.length / self.segment_count
+        return self.length / float(self.segment_count)
 
     @property
     def segment_mass(self) -> float:
         if self.segment_count <= 0:
             return 0.0
-        return self.mass / self.segment_count
+        return self.mass / float(self.segment_count)
 
     @property
-    def visual_color(self) -> Tuple[float, float, float]:
-        return (self.visual_color_r, self.visual_color_g, self.visual_color_b)
+    def capsule_height(self) -> float:
+        """Cylinder height so total capsule length matches the desired segment length."""
+        return max(self.segment_length - 2.0 * self.radius, 1e-4)
+
+    @property
+    def rot_limits(self) -> Dict[str, Tuple[float, float]]:
+        return {
+            "rotX": (self.rot_x_low, self.rot_x_high),
+            "rotY": (self.rot_y_low, self.rot_y_high),
+            "rotZ": (self.rot_z_low, self.rot_z_high),
+        }
 
 
 DEFAULT_PARAMS = RopeParameters()
 
 
 class RopeBuilderController:
-    """Owns the USD prims that make up the rope and implements the create/delete logic.
-
-    The actual PhysX authoring will be added iteratively; for now the class tracks the
-    requested parameters and provides a place to hook stage operations into.
-    """
+    """Creates a lightweight cable: rigid-body capsules under /World/cable with D6 joints and a spline."""
 
     def __init__(self):
         self._usd_context = omni.usd.get_context()
         self._params = RopeParameters()
         self._ensure_parameter_defaults()
-        self._rope_root_path = "/RopeBuilder/Rope"
+
+        self._rope_root_path = "/World/cable"
+        self._curve_path = f"{self._rope_root_path}/curve"
         self._rope_exists = False
         self._segment_paths: List[str] = []
         self._joint_paths: List[str] = []
+        self._joint_limits: Dict[str, Dict[str, Tuple[float, float]]] = {}
+        self._joint_drive_targets: Dict[str, Dict[str, float]] = {}
+
         self._physics_scene_path = "/World/physicsScene"
-        self._start_anchor_path = f"{self._rope_root_path}/start_anchor"
-        self._end_anchor_path = f"{self._rope_root_path}/end_anchor"
-        self._material_path = f"{self._rope_root_path}/Materials/Default"
-        self._material_shader_path = f"{self._material_path}/PreviewSurface"
+        self._update_subscription = None
 
     @property
     def parameters(self) -> RopeParameters:
         return self._params
 
+    @property
+    def curve_path(self) -> str:
+        return self._curve_path
+
     def set_parameters(self, params: RopeParameters):
         self._params = params
         self._ensure_parameter_defaults()
-        self._update_material_values()
         carb.log_info(f"[RopeBuilder] Updated parameters: {self._params}")
 
     def create_rope(self) -> str:
-        """Create the rope prim hierarchy on the current stage.
-
-        For now this only validates and stores the intent so that the UI flow can be
-        tested end-to-end.
-        """
+        """Create the cable prim hierarchy on the current stage."""
         if not self._validate_params(self._params):
-            raise ValueError("Invalid rope parameters. Please fix the highlighted values.")
+            raise ValueError("Invalid cable parameters. Please fix the highlighted values.")
 
         stage = self._usd_context.get_stage()
         if stage is None:
-            raise RuntimeError("No open USD stage. Create or open a stage before building a rope.")
+            raise RuntimeError("No open USD stage. Create or open a stage before building a cable.")
 
         self.delete_rope()
 
         carb.log_info(
-            "[RopeBuilder] Building rope with "
+            "[RopeBuilder] Building cable with "
             f"{self._params.segment_count} segments, total length {self._params.length} m."
         )
 
         self._ensure_physics_scene(stage)
         root_prim = UsdGeom.Xform.Define(stage, Sdf.Path(self._rope_root_path))
         root_prim.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.0))
-        self._get_or_create_material(stage)
 
         self._segment_paths = []
         self._joint_paths = []
+        self._joint_limits = {}
+        self._joint_drive_targets = {}
 
         prev_segment_path = None
         for idx in range(self._params.segment_count):
@@ -128,13 +142,13 @@ class RopeBuilderController:
             self._segment_paths.append(segment_path)
             prev_segment_path = segment_path
 
-        self._create_anchors(stage)
-
         self._rope_exists = True
         return self._rope_root_path
 
     def delete_rope(self):
-        """Remove the rope prims from the stage if they exist."""
+        """Remove the cable prims from the stage if they exist."""
+        self.stop_curve_updates()
+
         if not self._rope_exists:
             return
 
@@ -143,23 +157,99 @@ class RopeBuilderController:
             prim = stage.GetPrimAtPath(self._rope_root_path)
             if prim and prim.IsValid():
                 stage.RemovePrim(self._rope_root_path)
-                carb.log_info("[RopeBuilder] Deleted rope prim hierarchy.")
+                carb.log_info("[RopeBuilder] Deleted cable prim hierarchy.")
 
         self._rope_exists = False
         self._segment_paths = []
         self._joint_paths = []
-        self._start_anchor_path = f"{self._rope_root_path}/start_anchor"
-        self._end_anchor_path = f"{self._rope_root_path}/end_anchor"
+        self._joint_limits = {}
+        self._joint_drive_targets = {}
 
     def rope_exists(self) -> bool:
         return self._rope_exists
 
-    def refresh_visual_material(self):
-        """Update the shared material with current visual parameters."""
-        self._update_material_values()
-
     def validate_parameters(self) -> bool:
         return self._validate_params(self._params)
+
+    def start_curve_updates(self):
+        """Subscribe to the per-frame update stream to keep the spline in sync with segment positions."""
+        if not self._rope_exists:
+            raise RuntimeError("Create a cable before subscribing to the spline update.")
+
+        stage = self._usd_context.get_stage()
+        if stage is None:
+            raise RuntimeError("No USD stage available.")
+
+        self._ensure_curve_prim(stage)
+        if self._update_subscription:
+            return
+
+        app = omni.kit.app.get_app()
+        stream = app.get_update_event_stream()
+        self._update_subscription = stream.create_subscription_to_pop(self._on_curve_update)
+        self._update_curve_points()
+        carb.log_info("[RopeBuilder] Subscribed to spline updates.")
+
+    def stop_curve_updates(self):
+        """Stop per-frame spline updates."""
+        if self._update_subscription:
+            try:
+                self._update_subscription.unsubscribe()
+            finally:
+                self._update_subscription = None
+            carb.log_info("[RopeBuilder] Unsubscribed from spline updates.")
+
+    def curve_subscription_active(self) -> bool:
+        return self._update_subscription is not None
+
+    def get_joint_control_data(self) -> List[Dict]:
+        """Return joint paths, limits, and current drive targets for UI construction."""
+        data = []
+        for idx, path in enumerate(self._joint_paths):
+            data.append(
+                {
+                    "index": idx,
+                    "path": path,
+                    "limits": self._joint_limits.get(path, {}),
+                    "targets": self._joint_drive_targets.get(path, {}),
+                }
+            )
+        return data
+
+    def set_joint_drive_target(self, joint_index: int, axis: str, value: float) -> float:
+        """Clamp a UI-provided target to limits and write to the DriveAPI."""
+        if axis not in ROT_AXES or joint_index < 0 or joint_index >= len(self._joint_paths):
+            return 0.0
+
+        joint_path = self._joint_paths[joint_index]
+        limits = self._joint_limits.get(joint_path, {})
+        low, high = limits.get(axis, (-180.0, 180.0))
+        clamped = max(min(value, high), low)
+
+        stage = self._usd_context.get_stage()
+        if not stage:
+            return clamped
+
+        joint_prim = stage.GetPrimAtPath(joint_path)
+        if not joint_prim or not joint_prim.IsValid():
+            return clamped
+
+        drive = UsdPhysics.DriveAPI.Apply(joint_prim, axis)
+        drive.CreateTargetPositionAttr(clamped)
+        drive.GetTargetPositionAttr().Set(clamped)
+        drive.CreateTargetVelocityAttr(0.0)
+
+        self._joint_drive_targets.setdefault(joint_path, {})[axis] = clamped
+        return clamped
+
+    def reset_joint_drive_targets(self):
+        """Reset all drive targets to zero within limits."""
+        for idx, path in enumerate(self._joint_paths):
+            limits = self._joint_limits.get(path, {})
+            for axis in ROT_AXES:
+                low, high = limits.get(axis, (-180.0, 180.0))
+                if low <= 0.0 <= high:
+                    self.set_joint_drive_target(idx, axis, 0.0)
 
     def _ensure_parameter_defaults(self):
         """Fill in any missing attributes when hot-reloading older state."""
@@ -174,12 +264,16 @@ class RopeBuilderController:
         return all(
             [
                 params.length > 0.0,
-                params.diameter > 0.0,
+                params.radius > 0.0,
                 params.segment_count > 1,
                 params.mass > 0.0,
-                params.joint_stiffness >= 0.0,
-                params.joint_damping >= 0.0,
-                segment_length > params.diameter,
+                segment_length > params.radius * 2.0,
+                params.rot_x_low < params.rot_x_high,
+                params.rot_y_low < params.rot_y_high,
+                params.rot_z_low < params.rot_z_high,
+                params.drive_stiffness >= 0.0,
+                params.drive_damping >= 0.0,
+                params.drive_max_force >= 0.0,
             ]
         )
 
@@ -194,49 +288,36 @@ class RopeBuilderController:
         scene.CreateGravityMagnitudeAttr().Set(9.81)
 
     def _create_segment(self, stage, index: int) -> str:
-        """Author the prims for an individual rope segment."""
-        segment_path = Sdf.Path(f"{self._rope_root_path}/segment_{index:03d}")
+        """Author the prims for an individual cable segment (rigid body + collider only)."""
+        segment_path = Sdf.Path(f"{self._rope_root_path}/segment_{index:02d}")
         xform = UsdGeom.Xform.Define(stage, segment_path)
 
         center = self._segment_center_position(index)
         xform.AddTranslateOp().Set(center)
-
-        radius = self._params.diameter * 0.5
-        collision_path = segment_path.AppendPath("collision")
-        collision = UsdGeom.Capsule.Define(stage, collision_path)
-        collision.CreateRadiusAttr(radius)
-        collision.CreateHeightAttr(self._capsule_height(radius))
-        collision.CreateAxisAttr(UsdGeom.Tokens.x)
-        UsdPhysics.CollisionAPI.Apply(collision.GetPrim())
-        UsdGeom.Imageable(collision.GetPrim()).MakeInvisible()
-
-        visual_path = segment_path.AppendPath("visual")
-        visual = UsdGeom.Capsule.Define(stage, visual_path)
-        # Keep the same radius as collision and extend the cylindrical part so neighboring
-        # hemispheres coincide at the joint midpoint.
-        visual_radius = max(radius, 1e-4)
-        visual.CreateRadiusAttr(visual_radius)
-        visual_height = max(self._params.segment_length, 1e-4)
-        visual.CreateHeightAttr(visual_height)
-        visual.CreateAxisAttr(UsdGeom.Tokens.x)
-        self._bind_visual_material(stage, visual.GetPrim())
 
         rigid_prim = xform.GetPrim()
         UsdPhysics.RigidBodyAPI.Apply(rigid_prim)
         mass_api = UsdPhysics.MassAPI.Apply(rigid_prim)
         mass_api.CreateMassAttr(self._params.segment_mass)
 
-        # Enable CCD for better stability when the rope moves quickly.
         physx_body = PhysxSchema.PhysxRigidBodyAPI.Apply(rigid_prim)
         if physx_body:
             physx_body.CreateEnableCCDAttr(True)
+
+        collision_path = segment_path.AppendPath("collision")
+        collision = UsdGeom.Capsule.Define(stage, collision_path)
+        collision.CreateRadiusAttr(self._params.radius)
+        collision.CreateHeightAttr(self._params.capsule_height)
+        collision.CreateAxisAttr(UsdGeom.Tokens.x)
+        UsdPhysics.CollisionAPI.Apply(collision.GetPrim())
+        UsdGeom.Imageable(collision.GetPrim()).MakeInvisible()
 
         return str(segment_path)
 
     def _create_d6_joint(self, stage, joint_index: int, body0_path: str, body1_path: str) -> str:
         """Create a D6 joint connecting two neighboring segments."""
-        joint_path = Sdf.Path(f"{self._rope_root_path}/joint_{joint_index:03d}")
-        joint_prim = stage.DefinePrim(joint_path, "PhysicsJoint")
+        joint_path = Sdf.Path(f"{self._rope_root_path}/joint_{joint_index:02d}")
+        joint_prim = UsdPhysics.Joint.Define(stage, joint_path).GetPrim()
         joint = UsdPhysics.Joint(joint_prim)
         joint.CreateBody0Rel().SetTargets([body0_path])
         joint.CreateBody1Rel().SetTargets([body1_path])
@@ -247,90 +328,74 @@ class RopeBuilderController:
 
         PhysxSchema.PhysxJointAPI.Apply(joint_prim)
 
-        drive_axes = [
-            UsdPhysics.Tokens.transX,
-            UsdPhysics.Tokens.transY,
-            UsdPhysics.Tokens.transZ,
-            UsdPhysics.Tokens.rotX,
-            UsdPhysics.Tokens.rotY,
-            UsdPhysics.Tokens.rotZ,
-        ]
-        for axis in drive_axes:
-            drive = UsdPhysics.DriveAPI.Apply(joint_prim, axis)
-            drive.CreateTargetPositionAttr().Set(0.0)
-            drive.CreateTargetVelocityAttr().Set(0.0)
-            drive.CreateStiffnessAttr(self._params.joint_stiffness)
-            drive.CreateDampingAttr(self._params.joint_damping)
-            drive.CreateMaxForceAttr(1e6)
+        for axis in TRANS_AXES:
+            limit = UsdPhysics.LimitAPI.Apply(joint_prim, axis)
+            limit.CreateLowAttr(1.0)
+            limit.CreateHighAttr(-1.0)
 
+        limits = self._params.rot_limits
+        for axis in ROT_AXES:
+            low, high = limits[axis]
+            limit = UsdPhysics.LimitAPI.Apply(joint_prim, axis)
+            limit.CreateLowAttr(low)
+            limit.CreateHighAttr(high)
+
+            drive = UsdPhysics.DriveAPI.Apply(joint_prim, axis)
+            drive.CreateTypeAttr("force")
+            drive.CreateTargetPositionAttr(0.0)
+            drive.CreateTargetVelocityAttr(0.0)
+            drive.CreateStiffnessAttr(self._params.drive_stiffness)
+            drive.CreateDampingAttr(self._params.drive_damping)
+            drive.CreateMaxForceAttr(self._params.drive_max_force)
+
+        self._joint_limits[str(joint_path)] = {axis: limits[axis] for axis in ROT_AXES}
+        self._joint_drive_targets[str(joint_path)] = {axis: 0.0 for axis in ROT_AXES}
         return str(joint_path)
 
     def _segment_center_position(self, index: int) -> Gf.Vec3d:
-        """Compute the world-space center of the segment assuming a straight rope along X."""
+        """Compute the world-space center of the segment assuming a straight cable along X."""
         spacing = self._params.segment_length
         start = -0.5 * self._params.length + 0.5 * spacing
         x = start + index * spacing
         return Gf.Vec3d(x, 0.0, 0.0)
 
-    def _capsule_height(self, radius: float) -> float:
-        """Return the cylindrical height so total length matches the desired segment length."""
-        total = self._params.segment_length
-        return max(total - 2.0 * radius, 1e-4)
+    def _ensure_curve_prim(self, stage):
+        curve_prim = UsdGeom.BasisCurves.Get(stage, Sdf.Path(self._curve_path))
+        if not curve_prim:
+            curve_prim = UsdGeom.BasisCurves.Define(stage, Sdf.Path(self._curve_path)).GetPrim()
+            curves = UsdGeom.BasisCurves(curve_prim)
+            curves.CreateTypeAttr("cubic")
+            curves.CreateBasisAttr("catmullRom")
+            curves.CreateWrapAttr("pinned")
+        width = max(self._params.radius * self._params.curve_width_scale, 1e-4)
+        UsdGeom.BasisCurves(curve_prim).CreateWidthsAttr(Vt.FloatArray([width]))
+        return curve_prim
 
-    def _bind_visual_material(self, stage, prim):
-        material, _ = self._get_or_create_material(stage)
-        UsdShade.MaterialBindingAPI.Apply(prim).Bind(material)
-
-    def _get_or_create_material(self, stage):
-        material = UsdShade.Material.Get(stage, Sdf.Path(self._material_path))
-        shader = UsdShade.Shader.Get(stage, Sdf.Path(self._material_shader_path))
-
-        if not material:
-            material = UsdShade.Material.Define(stage, Sdf.Path(self._material_path))
-        if not shader:
-            shader = UsdShade.Shader.Define(stage, Sdf.Path(self._material_shader_path))
-            shader.CreateIdAttr("UsdPreviewSurface")
-            shader.CreateOutput("surface", Sdf.ValueTypeNames.Token)
-
-        # Ensure the material output exists and is wired to the shader output.
-        surface_output = material.CreateSurfaceOutput()
-        surface_output.ConnectToSource(
-            shader.ConnectableAPI(), "surface", UsdShade.AttributeType.Output
-        )
-
-        self._update_material_values(shader)
-        return material, shader
-
-    def _update_material_values(self, shader=None):
+    def _update_curve_points(self):
         stage = self._usd_context.get_stage()
-        if stage is None:
+        if not stage or not self._segment_paths:
             return
 
-        if shader is None:
-            shader = UsdShade.Shader.Get(stage, Sdf.Path(self._material_shader_path))
-            if not shader:
+        curve_prim = self._ensure_curve_prim(stage)
+        if not curve_prim:
+            return
+
+        pts = Vt.Vec3fArray()
+        for path in self._segment_paths:
+            prim = stage.GetPrimAtPath(path)
+            if not prim or not prim.IsValid():
                 return
+            xf = UsdGeom.Xformable(prim)
+            m = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+            pos = m.ExtractTranslation()
+            pts.append(Gf.Vec3f(pos[0], pos[1], pos[2]))
 
-        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(self._params.visual_color)
-        shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(self._params.visual_metallic)
-        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(self._params.visual_roughness)
+        curves = UsdGeom.BasisCurves(curve_prim)
+        curves.GetCurveVertexCountsAttr().Set(Vt.IntArray([len(pts)]))
+        curves.GetPointsAttr().Set(pts)
 
-    def _create_anchors(self, stage):
-        """Create null Xforms at each end so plugs can be snapped on easily."""
-        if not self._segment_paths:
+    def _on_curve_update(self, _dt):
+        if not self._rope_exists:
+            self.stop_curve_updates()
             return
-
-        half = self._params.segment_length * 0.5
-        start_segment = self._segment_paths[0]
-        end_segment = self._segment_paths[-1]
-
-        self._start_anchor_path = f"{start_segment}/start_anchor"
-        self._end_anchor_path = f"{end_segment}/end_anchor"
-
-        self._define_anchor(stage, self._start_anchor_path, Gf.Vec3d(-half, 0.0, 0.0))
-        self._define_anchor(stage, self._end_anchor_path, Gf.Vec3d(half, 0.0, 0.0))
-
-    def _define_anchor(self, stage, path: str, local_offset: Gf.Vec3d):
-        anchor_prim = UsdGeom.Xform.Define(stage, Sdf.Path(path))
-        anchor_prim.ClearXformOpOrder()
-        anchor_prim.AddTranslateOp().Set(local_offset)
+        self._update_curve_points()
