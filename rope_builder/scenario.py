@@ -221,7 +221,7 @@ class RopeBuilderController:
         return data
 
     def set_joint_drive_target(self, joint_index: int, axis: str, value: float, apply_pose: bool = True) -> float:
-        """Clamp a UI-provided target to limits, write to DriveAPI, and optionally pose in edit mode."""
+        """Clamp a UI-provided target; optionally write to drives or just pose in edit mode."""
         if axis not in ROT_AXES or joint_index < 0 or joint_index >= len(self._joint_paths):
             return 0.0
 
@@ -238,15 +238,18 @@ class RopeBuilderController:
         if not joint_prim or not joint_prim.IsValid():
             return clamped
 
-        drive = UsdPhysics.DriveAPI.Apply(joint_prim, axis)
-        drive.CreateTargetPositionAttr(clamped)
-        drive.GetTargetPositionAttr().Set(clamped)
-        drive.CreateTargetVelocityAttr(0.0)
-
         self._joint_drive_targets.setdefault(joint_path, {})[axis] = clamped
-        # If the user is not subscribed, update the curve immediately so the visual matches the new pose.
+
         if apply_pose:
+            # Edit-mode shaping: only move the segments, do not modify drive target attributes.
             self._apply_edit_pose_from_targets()
+        else:
+            # Simulation control path: write drive targets.
+            drive = UsdPhysics.DriveAPI.Apply(joint_prim, axis)
+            drive.CreateTargetPositionAttr(clamped)
+            drive.GetTargetPositionAttr().Set(clamped)
+            drive.CreateTargetVelocityAttr(0.0)
+
         return clamped
 
     def reset_joint_drive_targets(self):
@@ -256,7 +259,7 @@ class RopeBuilderController:
             for axis in ROT_AXES:
                 low, high = limits.get(axis, (-180.0, 180.0))
                 if low <= 0.0 <= high:
-                    self.set_joint_drive_target(idx, axis, 0.0)
+                    self.set_joint_drive_target(idx, axis, 0.0, apply_pose=True)
 
     def _ensure_parameter_defaults(self):
         """Fill in any missing attributes when hot-reloading older state."""
