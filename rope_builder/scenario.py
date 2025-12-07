@@ -91,6 +91,7 @@ class RopeBuilderController:
         self._joint_paths: List[str] = []
         self._joint_limits: Dict[str, Dict[str, Tuple[float, float]]] = {}
         self._joint_drive_targets: Dict[str, Dict[str, float]] = {}
+        self._show_curve = True
 
         self._physics_scene_path = "/World/physicsScene"
         self._update_subscription = None
@@ -145,6 +146,7 @@ class RopeBuilderController:
         # Author an initial curve so users see something without subscribing yet.
         self._ensure_curve_prim(stage)
         self._update_curve_points()
+        self._apply_visibility_state()
 
         self._rope_exists = True
         return self._rope_root_path
@@ -168,6 +170,7 @@ class RopeBuilderController:
         self._joint_paths = []
         self._joint_limits = {}
         self._joint_drive_targets = {}
+        self._show_curve = True
 
     def rope_exists(self) -> bool:
         return self._rope_exists
@@ -205,6 +208,15 @@ class RopeBuilderController:
 
     def curve_subscription_active(self) -> bool:
         return self._update_subscription is not None
+
+    def toggle_visibility(self) -> bool:
+        """Toggle between showing spline or collision capsules. Returns True when showing spline."""
+        self._show_curve = not self._show_curve
+        self._apply_visibility_state()
+        return self._show_curve
+
+    def showing_curve(self) -> bool:
+        return self._show_curve
 
     def get_joint_control_data(self) -> List[Dict]:
         """Return joint paths, limits, and current drive targets for UI construction."""
@@ -473,3 +485,23 @@ class RopeBuilderController:
         q = rot_x * rot_y * rot_z
         quatd = q.GetQuat()
         return Gf.Quatd(quatd.GetReal(), quatd.GetImaginary())
+
+    def _apply_visibility_state(self):
+        """Show either the spline or the collision capsules to declutter the view."""
+        stage = self._usd_context.get_stage()
+        if not stage or not self._rope_exists:
+            return
+
+        show_curve = self._show_curve
+
+        curve_prim = stage.GetPrimAtPath(self._curve_path)
+        if curve_prim and curve_prim.IsValid():
+            img = UsdGeom.Imageable(curve_prim)
+            (img.MakeVisible() if show_curve else img.MakeInvisible())
+
+        for seg_path in self._segment_paths:
+            col_prim = stage.GetPrimAtPath(f"{seg_path}/collision")
+            if not col_prim or not col_prim.IsValid():
+                continue
+            img = UsdGeom.Imageable(col_prim)
+            (img.MakeInvisible() if show_curve else img.MakeVisible())

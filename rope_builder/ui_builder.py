@@ -39,6 +39,7 @@ class UIBuilder:
         self._reset_joint_btn = None
         self._joint_frame = None
         self._joint_slider_models = {}
+        self._toggle_vis_btn = None
 
     ###################################################################################
     #           The Functions Below Are Called Automatically By extension.py
@@ -100,6 +101,9 @@ class UIBuilder:
                 )
                 self._reset_joint_btn = ui.Button(
                     "Reset joint targets", clicked_fn=self._on_reset_joints, enabled=False
+                )
+                self._toggle_vis_btn = ui.Button(
+                    "Show collisions", clicked_fn=self._on_toggle_visibility, enabled=False
                 )
                 ui.Label("Status:", style=get_style())
                 ui.Label("", word_wrap=True, model=self._status_model)
@@ -190,7 +194,9 @@ class UIBuilder:
         self._delete_btn.enabled = True
         self._reset_joint_btn.enabled = True
         self._subscription_btn.enabled = True
+        self._toggle_vis_btn.enabled = True
         self._refresh_subscription_btn()
+        self._refresh_visibility_btn()
         self._build_joint_controls()
         self._update_status(f"Cable prims initialized at {prim_path}.", warn=False)
 
@@ -199,7 +205,9 @@ class UIBuilder:
         self._delete_btn.enabled = False
         self._reset_joint_btn.enabled = False
         self._subscription_btn.enabled = False
+        self._toggle_vis_btn.enabled = False
         self._refresh_subscription_btn()
+        self._refresh_visibility_btn()
         self._clear_joint_controls()
         self._update_status("Cable deleted.", warn=False)
 
@@ -229,6 +237,15 @@ class UIBuilder:
             if model and low <= 0.0 <= high:
                 model.set_value(0.0)
 
+    def _on_toggle_visibility(self):
+        if not self._controller.rope_exists():
+            self._update_status("Create a cable before toggling visibility.", warn=True)
+            return
+        show_curve = self._controller.toggle_visibility()
+        self._refresh_visibility_btn()
+        msg = "Showing spline (collisions hidden)." if show_curve else "Showing collisions (spline hidden)."
+        self._update_status(msg, warn=False)
+
     def _reset_ui(self):
         params = self._controller.parameters
         for key, model in self._param_models.items():
@@ -243,9 +260,11 @@ class UIBuilder:
             self._delete_btn.enabled = exists
             self._reset_joint_btn.enabled = exists
             self._subscription_btn.enabled = exists
+            self._toggle_vis_btn.enabled = exists
 
         self._refresh_segment_slider_limit(clamp_value=True)
         self._refresh_subscription_btn()
+        self._refresh_visibility_btn()
         self._build_joint_controls()
         self._update_status("Ready to create a cable.", warn=False)
 
@@ -314,6 +333,13 @@ class UIBuilder:
         subscribed = self._controller.curve_subscription_active()
         self._subscription_btn.text = "Unsubscribe spline update" if subscribed else "Subscribe spline update"
         self._subscription_btn.enabled = self._controller.rope_exists()
+
+    def _refresh_visibility_btn(self):
+        if not self._toggle_vis_btn:
+            return
+        show_curve = self._controller.showing_curve()
+        self._toggle_vis_btn.text = "Show collisions" if show_curve else "Show spline"
+        self._toggle_vis_btn.enabled = self._controller.rope_exists()
 
     def _build_joint_controls(self):
         if not self._joint_frame:

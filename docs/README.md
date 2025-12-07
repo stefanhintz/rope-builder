@@ -9,4 +9,5 @@ To enable this extension, run Isaac Sim with the flags `--ext-folder {path_to_ex
 - Click **Create Cable** to author lightweight rigid-body capsules under `/World/cable` and D6 joints between them.
 - Use **Subscribe spline update** to draw a curve at `/World/cable/curve` that follows segment positions every frame; toggle again to stop.
 - Shape the cable interactively with the per-joint rotX/rotY/rotZ sliders; **Reset joint targets** snaps all drives back to zero inside the allowed limits.
+- Toggle **Show collisions/Show spline** to swap visibility between the spline visualization and the collision capsules.
 
