@@ -501,12 +501,27 @@ class RopeBuilderController:
             return
 
         pts_world: List[Gf.Vec3d] = []
+
+        first_pose = self._segment_frame(stage, state.segment_paths[0]) if state.segment_paths else None
+        last_pose = self._segment_frame(stage, state.segment_paths[-1]) if state.segment_paths else None
+        half_len = state.params.segment_length * 0.5
+
+        if first_pose:
+            pos, rot = first_pose
+            dir_x = Gf.Rotation(rot).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
+            pts_world.append(pos - dir_x * half_len)
+
         for path in state.segment_paths:
             wp = self._segment_world_pos(stage, path)
             if wp is None:
                 carb.log_warn(f"[RopeBuilder] Missing segment for curve update: {path}")
                 continue
             pts_world.append(Gf.Vec3d(wp))
+
+        if last_pose:
+            pos, rot = last_pose
+            dir_x = Gf.Rotation(rot).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
+            pts_world.append(pos + dir_x * half_len)
 
         curves = UsdGeom.BasisCurves(curve_prim)
         if len(pts_world) < 2:
@@ -532,6 +547,16 @@ class RopeBuilderController:
         m = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
         pos = m.ExtractTranslation()
         return Gf.Vec3f(pos[0], pos[1], pos[2])
+
+    def _segment_frame(self, stage, path: str) -> Optional[Tuple[Gf.Vec3d, Gf.Quatd]]:
+        prim = stage.GetPrimAtPath(path)
+        if not prim or not prim.IsValid():
+            return None
+        xf = UsdGeom.Xformable(prim)
+        m = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        pos = Gf.Vec3d(m.ExtractTranslation())
+        rot = m.ExtractRotation().GetQuat()
+        return pos, rot
 
     def _world_to_local_points(self, prim, world_pts: List[Gf.Vec3d]) -> List[Gf.Vec3f]:
         """Transform world-space points into the local space of prim."""
