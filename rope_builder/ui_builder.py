@@ -354,7 +354,7 @@ class UIBuilder:
             ui.Label("Create a cable to edit joint drive targets.", style=get_style())
 
     def _on_joint_slider_changed(self, joint_index: int, axis: str, value: float):
-        clamped = self._controller.set_joint_drive_target(joint_index, axis, value)
+        clamped = self._controller.set_joint_drive_target(joint_index, axis, value, apply_pose=True)
         model = self._joint_slider_models.get((joint_index, axis))
         if model and abs(model.as_float - clamped) > 1e-6:
             model.set_value(clamped)

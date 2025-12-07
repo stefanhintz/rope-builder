@@ -220,8 +220,8 @@ class RopeBuilderController:
             )
         return data
 
-    def set_joint_drive_target(self, joint_index: int, axis: str, value: float) -> float:
-        """Clamp a UI-provided target to limits and write to the DriveAPI."""
+    def set_joint_drive_target(self, joint_index: int, axis: str, value: float, apply_pose: bool = True) -> float:
+        """Clamp a UI-provided target to limits, write to DriveAPI, and optionally pose in edit mode."""
         if axis not in ROT_AXES or joint_index < 0 or joint_index >= len(self._joint_paths):
             return 0.0
 
@@ -245,8 +245,8 @@ class RopeBuilderController:
 
         self._joint_drive_targets.setdefault(joint_path, {})[axis] = clamped
         # If the user is not subscribed, update the curve immediately so the visual matches the new pose.
-        if not self.curve_subscription_active():
-            self._update_curve_points()
+        if apply_pose:
+            self._apply_edit_pose_from_targets()
         return clamped
 
     def reset_joint_drive_targets(self):
@@ -420,3 +420,52 @@ class RopeBuilderController:
         m = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
         pos = m.ExtractTranslation()
         return Gf.Vec3f(pos[0], pos[1], pos[2])
+
+    def _apply_edit_pose_from_targets(self):
+        """Reposition segments in edit mode based on current joint drive targets."""
+        stage = self._usd_context.get_stage()
+        if not stage or not self._segment_paths:
+            return
+
+        seg_len = self._params.segment_length
+        start_pt = Gf.Vec3d(-0.5 * self._params.length, 0.0, 0.0)
+        orientation = Gf.Quatd(1.0, 0.0, 0.0, 0.0)
+
+        for idx, seg_path in enumerate(self._segment_paths):
+            if idx > 0 and idx - 1 < len(self._joint_paths):
+                joint_path = self._joint_paths[idx - 1]
+                targets = self._joint_drive_targets.get(joint_path, {})
+                orientation = orientation * self._compose_joint_rotation(targets)
+
+            forward = orientation.TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
+            end_pt = start_pt + forward * seg_len
+            center = (start_pt + end_pt) * 0.5
+
+            prim = stage.GetPrimAtPath(seg_path)
+            if prim and prim.IsValid():
+                xf = UsdGeom.Xformable(prim)
+                xf.ClearXformOpOrder()
+                xf.AddTranslateOp().Set(Gf.Vec3f(center))
+                qf = Gf.Quatf(float(orientation.GetReal()), Gf.Vec3f(orientation.GetImaginary()))
+                xf.AddOrientOp().Set(qf)
+                xf.AddScaleOp().Set(Gf.Vec3f(1.0, 1.0, 1.0))
+
+            start_pt = end_pt
+
+        if not self.curve_subscription_active():
+            self._update_curve_points()
+
+    def _compose_joint_rotation(self, targets: Dict[str, float]) -> Gf.Quatd:
+        """Compose a rotation quaternion from rotX/Y/Z drive targets in degrees."""
+        rx = targets.get("rotX", 0.0)
+        ry = targets.get("rotY", 0.0)
+        rz = targets.get("rotZ", 0.0)
+
+        rot_x = Gf.Rotation(Gf.Vec3d(1.0, 0.0, 0.0), rx)
+        rot_y = Gf.Rotation(Gf.Vec3d(0.0, 1.0, 0.0), ry)
+        rot_z = Gf.Rotation(Gf.Vec3d(0.0, 0.0, 1.0), rz)
+
+        # Apply rotations in X -> Y -> Z order.
+        q = rot_x * rot_y * rot_z
+        quatd = q.GetQuat()
+        return Gf.Quatd(quatd.GetReal(), quatd.GetImaginary())
