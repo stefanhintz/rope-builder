@@ -437,7 +437,8 @@ class RopeBuilderController:
                 targets = self._joint_drive_targets.get(joint_path, {})
                 orientation = orientation * self._compose_joint_rotation(targets)
 
-            forward = orientation.TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
+            # Rotate local +X by the accumulated joint orientation.
+            forward = Gf.Rotation(orientation).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
             end_pt = start_pt + forward * seg_len
             center = (start_pt + end_pt) * 0.5
 
