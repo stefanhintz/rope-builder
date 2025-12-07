@@ -500,22 +500,23 @@ class RopeBuilderController:
         if not curve_prim:
             return
 
-        pts_list: List[Gf.Vec3f] = []
+        pts_world: List[Gf.Vec3d] = []
         for path in state.segment_paths:
             wp = self._segment_world_pos(stage, path)
             if wp is None:
                 carb.log_warn(f"[RopeBuilder] Missing segment for curve update: {path}")
                 continue
-            pts_list.append(wp)
+            pts_world.append(Gf.Vec3d(wp))
 
         curves = UsdGeom.BasisCurves(curve_prim)
-        if len(pts_list) < 2:
+        if len(pts_world) < 2:
             curves.CreateCurveVertexCountsAttr().Set(Vt.IntArray([0]))
             curves.CreatePointsAttr().Set(Vt.Vec3fArray())
             return
 
-        curves.CreateCurveVertexCountsAttr().Set(Vt.IntArray([len(pts_list)]))
-        curves.CreatePointsAttr().Set(Vt.Vec3fArray(pts_list))
+        local_pts = self._world_to_local_points(curve_prim, pts_world)
+        curves.CreateCurveVertexCountsAttr().Set(Vt.IntArray([len(local_pts)]))
+        curves.CreatePointsAttr().Set(Vt.Vec3fArray(local_pts))
 
     def _on_curve_update(self, root_path: str, _dt):
         state = self._cables.get(root_path)
@@ -531,6 +532,13 @@ class RopeBuilderController:
         m = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
         pos = m.ExtractTranslation()
         return Gf.Vec3f(pos[0], pos[1], pos[2])
+
+    def _world_to_local_points(self, prim, world_pts: List[Gf.Vec3d]) -> List[Gf.Vec3f]:
+        """Transform world-space points into the local space of prim."""
+        xf = UsdGeom.Xformable(prim)
+        m_world = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        inv = m_world.GetInverse()
+        return [Gf.Vec3f(inv.Transform(p)) for p in world_pts]
 
     def _apply_edit_pose_from_targets(self, state: CableState):
         """Reposition segments in edit mode based on current joint drive targets."""
