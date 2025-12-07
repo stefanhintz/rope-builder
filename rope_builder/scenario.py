@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import carb
 import omni.kit.app
@@ -142,6 +142,10 @@ class RopeBuilderController:
             self._segment_paths.append(segment_path)
             prev_segment_path = segment_path
 
+        # Author an initial curve so users see something without subscribing yet.
+        self._ensure_curve_prim(stage)
+        self._update_curve_points()
+
         self._rope_exists = True
         return self._rope_root_path
 
@@ -240,6 +244,9 @@ class RopeBuilderController:
         drive.CreateTargetVelocityAttr(0.0)
 
         self._joint_drive_targets.setdefault(joint_path, {})[axis] = clamped
+        # If the user is not subscribed, update the curve immediately so the visual matches the new pose.
+        if not self.curve_subscription_active():
+            self._update_curve_points()
         return clamped
 
     def reset_joint_drive_targets(self):
@@ -380,22 +387,36 @@ class RopeBuilderController:
         if not curve_prim:
             return
 
-        pts = Vt.Vec3fArray()
+        pts_list: List[Gf.Vec3f] = []
         for path in self._segment_paths:
-            prim = stage.GetPrimAtPath(path)
-            if not prim or not prim.IsValid():
-                return
-            xf = UsdGeom.Xformable(prim)
-            m = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-            pos = m.ExtractTranslation()
-            pts.append(Gf.Vec3f(pos[0], pos[1], pos[2]))
+            wp = self._segment_world_pos(stage, path)
+            if wp is None:
+                carb.log_warn(f"[RopeBuilder] Missing segment for curve update: {path}")
+                continue
+            pts_list.append(wp)
+
+        if len(pts_list) < 2:
+            # Not enough points to form a curve; clear counts and points but leave prim.
+            curves = UsdGeom.BasisCurves(curve_prim)
+            curves.CreateCurveVertexCountsAttr().Set(Vt.IntArray([0]))
+            curves.CreatePointsAttr().Set(Vt.Vec3fArray())
+            return
 
         curves = UsdGeom.BasisCurves(curve_prim)
-        curves.GetCurveVertexCountsAttr().Set(Vt.IntArray([len(pts)]))
-        curves.GetPointsAttr().Set(pts)
+        curves.CreateCurveVertexCountsAttr().Set(Vt.IntArray([len(pts_list)]))
+        curves.CreatePointsAttr().Set(Vt.Vec3fArray(pts_list))
 
     def _on_curve_update(self, _dt):
         if not self._rope_exists:
             self.stop_curve_updates()
             return
         self._update_curve_points()
+
+    def _segment_world_pos(self, stage, path: str) -> Optional[Gf.Vec3f]:
+        prim = stage.GetPrimAtPath(path)
+        if not prim or not prim.IsValid():
+            return None
+        xf = UsdGeom.Xformable(prim)
+        m = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        pos = m.ExtractTranslation()
+        return Gf.Vec3f(pos[0], pos[1], pos[2])
