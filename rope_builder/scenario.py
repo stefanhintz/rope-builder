@@ -50,9 +50,10 @@ class RopeParameters:
 
     @property
     def segment_length(self) -> float:
+        """Nominal length of a regular segment (excludes the two shortened end segments)."""
         if self.segment_count <= 0:
             return 0.0
-        return self.length / float(self.segment_count)
+        return self.length / float(self.segment_count + 0.5)
 
     @property
     def segment_mass(self) -> float:
@@ -79,6 +80,7 @@ class CableState:
     root_path: str
     curve_path: str
     params: RopeParameters
+    segment_lengths: List[float]
     segment_paths: List[str]
     joint_paths: List[str]
     joint_limits: Dict[str, Dict[str, Tuple[float, float]]]
@@ -145,22 +147,34 @@ class RopeBuilderController:
         root_prim = UsdGeom.Xform.Define(stage, Sdf.Path(root_path))
         root_prim.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.0))
 
+        segment_plan = self._segment_plan(params)
+        total_len = sum(length for _, length in segment_plan)
+        cursor = -0.5 * total_len
+
         prev_segment_path = None
-        for idx in range(params.segment_count):
-            segment_path = self._create_segment(stage, root_path, params, idx)
-            if prev_segment_path:
-                joint_path, limits = self._create_d6_joint(stage, root_path, params, idx - 1, prev_segment_path, segment_path)
+        prev_len = None
+        for name, seg_len in segment_plan:
+            center = Gf.Vec3d(cursor + 0.5 * seg_len, 0.0, 0.0)
+            seg_mass = params.mass * (seg_len / total_len) if total_len > 0.0 else params.segment_mass
+            segment_path = self._create_segment(stage, root_path, params, name, seg_len, center, seg_mass)
+            if prev_segment_path and prev_len is not None:
+                joint_path, limits = self._create_d6_joint(
+                    stage, root_path, params, len(joint_paths), prev_segment_path, segment_path, prev_len, seg_len
+                )
                 joint_paths.append(joint_path)
                 joint_limits[joint_path] = limits
                 joint_targets[joint_path] = {axis: 0.0 for axis in ROT_AXES}
             segment_paths.append(segment_path)
             prev_segment_path = segment_path
+            prev_len = seg_len
+            cursor += seg_len
 
         curve_path = f"{root_path}/curve"
         state = CableState(
             root_path=root_path,
             curve_path=curve_path,
             params=params,
+            segment_lengths=[length for _, length in segment_plan],
             segment_paths=segment_paths,
             joint_paths=joint_paths,
             joint_limits=joint_limits,
@@ -198,6 +212,13 @@ class RopeBuilderController:
                 segments.append((int(m.group(1)), child.GetPath().pathString))
         segments.sort(key=lambda x: x[0])
         segment_paths = [p for _, p in segments]
+        # Also include start/end if named that way.
+        start_path = f"{root_path}/segment_start"
+        end_path = f"{root_path}/segment_end"
+        if stage.GetPrimAtPath(start_path).IsValid():
+            segment_paths = [start_path] + segment_paths
+        if stage.GetPrimAtPath(end_path).IsValid():
+            segment_paths = segment_paths + [end_path]
         if len(segment_paths) < 2:
             raise RuntimeError("Need at least 2 segments to import a cable.")
 
@@ -210,7 +231,7 @@ class RopeBuilderController:
         joints.sort(key=lambda x: x[0])
         joint_paths = [p for _, p in joints]
 
-        params, joint_limits = self._infer_params_from_stage(stage, root_path, segment_paths, joint_paths)
+        params, joint_limits, seg_lengths = self._infer_params_from_stage(stage, root_path, segment_paths, joint_paths)
         joint_targets = {jp: {axis: 0.0 for axis in ROT_AXES} for jp in joint_paths}
 
         curve_path = f"{root_path}/curve"
@@ -218,6 +239,7 @@ class RopeBuilderController:
             root_path=root_path,
             curve_path=curve_path,
             params=params,
+            segment_lengths=seg_lengths,
             segment_paths=segment_paths,
             joint_paths=joint_paths,
             joint_limits=joint_limits,
@@ -372,6 +394,7 @@ class RopeBuilderController:
     def _validate_params(params: RopeParameters) -> bool:
         """Basic sanity checks to catch common input mistakes."""
         segment_length = params.segment_length
+        short_length = segment_length * 0.25
         return all(
             [
                 params.length > 0.0,
@@ -379,6 +402,7 @@ class RopeBuilderController:
                 params.segment_count > 1,
                 params.mass > 0.0,
                 segment_length > params.radius * 2.0,
+                short_length > params.radius * 2.0,
                 params.rot_x_low < params.rot_x_high,
                 params.rot_y_low < params.rot_y_high,
                 params.rot_z_low < params.rot_z_high,
@@ -398,18 +422,26 @@ class RopeBuilderController:
         scene.CreateGravityDirectionAttr().Set(Gf.Vec3f(0, 0, -1))
         scene.CreateGravityMagnitudeAttr().Set(9.81)
 
-    def _create_segment(self, stage, root_path: str, params: RopeParameters, index: int) -> str:
+    def _create_segment(
+        self,
+        stage,
+        root_path: str,
+        params: RopeParameters,
+        name: str,
+        seg_len: float,
+        center: Gf.Vec3d,
+        seg_mass: float,
+    ) -> str:
         """Author the prims for an individual cable segment (rigid body + collider only)."""
-        segment_path = Sdf.Path(f"{root_path}/segment_{index:02d}")
+        segment_path = Sdf.Path(f"{root_path}/{name}")
         xform = UsdGeom.Xform.Define(stage, segment_path)
 
-        center = self._segment_center_position(params, index)
         xform.AddTranslateOp().Set(center)
 
         rigid_prim = xform.GetPrim()
         UsdPhysics.RigidBodyAPI.Apply(rigid_prim)
         mass_api = UsdPhysics.MassAPI.Apply(rigid_prim)
-        mass_api.CreateMassAttr(params.segment_mass)
+        mass_api.CreateMassAttr(seg_mass)
 
         physx_body = PhysxSchema.PhysxRigidBodyAPI.Apply(rigid_prim)
         if physx_body:
@@ -418,7 +450,7 @@ class RopeBuilderController:
         collision_path = segment_path.AppendPath("collision")
         collision = UsdGeom.Capsule.Define(stage, collision_path)
         collision.CreateRadiusAttr(params.radius)
-        collision.CreateHeightAttr(params.capsule_height)
+        collision.CreateHeightAttr(max(seg_len - 2.0 * params.radius, 1e-4))
         collision.CreateAxisAttr(UsdGeom.Tokens.x)
         UsdPhysics.CollisionAPI.Apply(collision.GetPrim())
         UsdGeom.Imageable(collision.GetPrim()).MakeInvisible()
@@ -433,6 +465,8 @@ class RopeBuilderController:
         joint_index: int,
         body0_path: str,
         body1_path: str,
+        len0: float,
+        len1: float,
     ) -> Tuple[str, Dict[str, Tuple[float, float]]]:
         """Create a D6 joint connecting two neighboring segments."""
         joint_path = Sdf.Path(f"{root_path}/joint_{joint_index:02d}")
@@ -441,9 +475,8 @@ class RopeBuilderController:
         joint.CreateBody0Rel().SetTargets([body0_path])
         joint.CreateBody1Rel().SetTargets([body1_path])
 
-        half_length = params.segment_length * 0.5
-        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(half_length, 0.0, 0.0))
-        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(-half_length, 0.0, 0.0))
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(len0 * 0.5, 0.0, 0.0))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(-len1 * 0.5, 0.0, 0.0))
 
         PhysxSchema.PhysxJointAPI.Apply(joint_prim)
 
@@ -472,13 +505,6 @@ class RopeBuilderController:
 
         return str(joint_path), limits_out
 
-    def _segment_center_position(self, params: RopeParameters, index: int) -> Gf.Vec3d:
-        """Compute the world-space center of the segment assuming a straight cable along X."""
-        spacing = params.segment_length
-        start = -0.5 * params.length + 0.5 * spacing
-        x = start + index * spacing
-        return Gf.Vec3d(x, 0.0, 0.0)
-
     def _ensure_curve_prim(self, stage, state: CableState):
         curve_prim = UsdGeom.BasisCurves.Get(stage, Sdf.Path(state.curve_path))
         if not curve_prim:
@@ -502,14 +528,16 @@ class RopeBuilderController:
 
         pts_world: List[Gf.Vec3d] = []
 
+        seg_lengths = state.segment_lengths or [state.params.segment_length] * len(state.segment_paths)
         first_pose = self._segment_frame(stage, state.segment_paths[0]) if state.segment_paths else None
         last_pose = self._segment_frame(stage, state.segment_paths[-1]) if state.segment_paths else None
-        half_len = state.params.segment_length * 0.5
+        half_len_first = seg_lengths[0] * 0.5 if seg_lengths else state.params.segment_length * 0.5
+        half_len_last = seg_lengths[-1] * 0.5 if seg_lengths else state.params.segment_length * 0.5
 
         if first_pose:
             pos, rot = first_pose
             dir_x = Gf.Rotation(rot).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
-            pts_world.append(pos - dir_x * half_len)
+            pts_world.append(pos - dir_x * half_len_first)
 
         for path in state.segment_paths:
             wp = self._segment_world_pos(stage, path)
@@ -521,7 +549,7 @@ class RopeBuilderController:
         if last_pose:
             pos, rot = last_pose
             dir_x = Gf.Rotation(rot).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
-            pts_world.append(pos + dir_x * half_len)
+            pts_world.append(pos + dir_x * half_len_last)
 
         curves = UsdGeom.BasisCurves(curve_prim)
         if len(pts_world) < 2:
@@ -571,9 +599,9 @@ class RopeBuilderController:
         if not stage or not state.segment_paths:
             return
 
-        params = state.params
-        seg_len = params.segment_length
-        start_pt = Gf.Vec3d(-0.5 * params.length, 0.0, 0.0)
+        seg_lengths = state.segment_lengths or [state.params.segment_length] * len(state.segment_paths)
+        total_len = sum(seg_lengths)
+        start_pt = Gf.Vec3d(-0.5 * total_len, 0.0, 0.0)
         orientation = Gf.Quatd(1.0, 0.0, 0.0, 0.0)
 
         for idx, seg_path in enumerate(state.segment_paths):
@@ -583,6 +611,7 @@ class RopeBuilderController:
                 orientation = orientation * self._compose_joint_rotation(targets)
 
             forward = Gf.Rotation(orientation).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
+            seg_len = seg_lengths[idx] if idx < len(seg_lengths) else state.params.segment_length
             end_pt = start_pt + forward * seg_len
             center = (start_pt + end_pt) * 0.5
 
@@ -644,6 +673,16 @@ class RopeBuilderController:
             suffix += 1
         return candidate
 
+    def _segment_plan(self, params: RopeParameters) -> List[Tuple[str, float]]:
+        """Return ordered list of (name, length) including short start/end segments."""
+        base_len = params.segment_length
+        short_len = base_len * 0.25
+        plan: List[Tuple[str, float]] = [("segment_start", short_len)]
+        for i in range(params.segment_count):
+            plan.append((f"segment_{i:02d}", base_len))
+        plan.append(("segment_end", short_len))
+        return plan
+
     def _get_state(self, root_path: Optional[str] = None, require: bool = True) -> Optional[CableState]:
         path = root_path or self._active_path
         state = self._cables.get(path) if path else None
@@ -659,28 +698,37 @@ class RopeBuilderController:
 
     def _infer_params_from_stage(
         self, stage, root_path: str, segment_paths: List[str], joint_paths: List[str]
-    ) -> Tuple[RopeParameters, Dict[str, Dict[str, Tuple[float, float]]]]:
+    ) -> Tuple[RopeParameters, Dict[str, Dict[str, Tuple[float, float]]], List[float]]:
         radius = 0.01
-        seg_len = 0.1
+        seg_lengths: List[float] = []
         mass_total = 1.0
         limits: Dict[str, Dict[str, Tuple[float, float]]] = {}
 
-        # Radius + segment length from first segment collision.
-        first_col = stage.GetPrimAtPath(f"{segment_paths[0]}/collision")
-        if first_col and first_col.IsValid():
-            rad_attr = first_col.GetAttribute("radius")
-            if rad_attr and rad_attr.HasAuthoredValueOpinion():
-                radius = float(rad_attr.Get())
-            h_attr = first_col.GetAttribute("height")
-            if h_attr and h_attr.HasAuthoredValueOpinion():
-                seg_len = float(h_attr.Get()) + 2.0 * radius
+        # Radius + individual segment lengths from collisions or spacing.
+        for i, spath in enumerate(segment_paths):
+            rad = radius
+            length = None
+            col_prim = stage.GetPrimAtPath(f"{spath}/collision")
+            if col_prim and col_prim.IsValid():
+                rad_attr = col_prim.GetAttribute("radius")
+                if rad_attr and rad_attr.HasAuthoredValueOpinion():
+                    rad = float(rad_attr.Get())
+                h_attr = col_prim.GetAttribute("height")
+                if h_attr and h_attr.HasAuthoredValueOpinion():
+                    length = float(h_attr.Get()) + 2.0 * rad
+            if i == 0:
+                radius = rad
+            if length is None:
+                if i + 1 < len(segment_paths):
+                    p0 = self._segment_world_pos(stage, spath)
+                    p1 = self._segment_world_pos(stage, segment_paths[i + 1])
+                    if p0 is not None and p1 is not None:
+                        length = float((Gf.Vec3d(p1) - Gf.Vec3d(p0)).GetLength())
+            if length is None:
+                length = 0.1
+            seg_lengths.append(length)
 
-        # Fallback segment length from spacing of first two centers.
-        if len(segment_paths) >= 2:
-            p0 = self._segment_world_pos(stage, segment_paths[0])
-            p1 = self._segment_world_pos(stage, segment_paths[1])
-            if p0 is not None and p1 is not None:
-                seg_len = max(float((Gf.Vec3d(p1) - Gf.Vec3d(p0)).GetLength()), seg_len)
+        total_len = sum(seg_lengths) if seg_lengths else 0.1
 
         # Mass from summing segment masses.
         total = 0.0
@@ -722,10 +770,11 @@ class RopeBuilderController:
                 if mf_attr and mf_attr.HasAuthoredValueOpinion():
                     max_force = float(mf_attr.Get())
 
+        inner_count = max(len(segment_paths) - 2, 1)
         params = RopeParameters(
-            length=seg_len * len(segment_paths),
+            length=total_len,
             radius=radius,
-            segment_count=len(segment_paths),
+            segment_count=inner_count,
             mass=mass_total,
             rot_x_low=limits.get(joint_paths[0], {}).get("rotX", (-30.0, 30.0))[0] if joint_paths else -30.0,
             rot_x_high=limits.get(joint_paths[0], {}).get("rotX", (-30.0, 30.0))[1] if joint_paths else 30.0,
@@ -738,4 +787,4 @@ class RopeBuilderController:
             drive_max_force=max_force,
             curve_width_scale=DEFAULT_PARAMS.curve_width_scale,
         )
-        return params, limits
+        return params, limits, seg_lengths
