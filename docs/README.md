@@ -4,7 +4,7 @@ To enable this extension, run Isaac Sim with the flags `--ext-folder {path_to_ex
 
 ## Cable workflow
 
-- Open the Rope Builder window, set cable length, radius, segment count, and mass.
+- Open the Rope Builder window, set cable length, radius, segment count, mass, and spline extension (to cover sockets).
 - Tune joint limits (degrees) plus drive stiffness/damping/force before creating the cable.
 - Click **Create Cable** to author lightweight rigid-body capsules under `/World/cable` and D6 joints between them.
 - Use **Subscribe spline update** to draw a curve at `/World/cable/curve` that follows segment positions every frame; toggle again to stop.

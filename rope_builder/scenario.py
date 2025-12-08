@@ -46,6 +46,7 @@ class RopeParameters:
     drive_stiffness: float = 1200.0
     drive_damping: float = 70.0
     drive_max_force: float = 200.0
+    curve_extension: float = 0.02  # meters to extend spline beyond first/last collider
     curve_width_scale: float = 2.0  # multiplier for visual curve width (radius * scale)
 
     @property
@@ -409,6 +410,7 @@ class RopeBuilderController:
                 params.drive_stiffness >= 0.0,
                 params.drive_damping >= 0.0,
                 params.drive_max_force >= 0.0,
+                params.curve_extension >= 0.0,
             ]
         )
 
@@ -533,11 +535,12 @@ class RopeBuilderController:
         last_pose = self._segment_frame(stage, state.segment_paths[-1]) if state.segment_paths else None
         half_len_first = seg_lengths[0] * 0.5 if seg_lengths else state.params.segment_length * 0.5
         half_len_last = seg_lengths[-1] * 0.5 if seg_lengths else state.params.segment_length * 0.5
+        extension = max(state.params.curve_extension, 0.0)
 
         if first_pose:
             pos, rot = first_pose
             dir_x = Gf.Rotation(rot).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
-            pts_world.append(pos - dir_x * half_len_first)
+            pts_world.append(pos - dir_x * (half_len_first + extension))
 
         for path in state.segment_paths:
             wp = self._segment_world_pos(stage, path)
@@ -549,7 +552,7 @@ class RopeBuilderController:
         if last_pose:
             pos, rot = last_pose
             dir_x = Gf.Rotation(rot).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
-            pts_world.append(pos + dir_x * half_len_last)
+            pts_world.append(pos + dir_x * (half_len_last + extension))
 
         curves = UsdGeom.BasisCurves(curve_prim)
         if len(pts_world) < 2:

@@ -78,6 +78,7 @@ class UIBuilder:
             with ui.VStack(style=get_style(), spacing=8, height=0):
                 self._build_float_field("Length (m)", "length", min_value=0.1, step=0.05)
                 self._build_float_field("Radius (m)", "radius", min_value=0.001, step=0.001)
+                self._build_float_field("Spline extend (m)", "curve_extension", min_value=0.0, step=0.005)
                 self._build_segment_slider("Segments", "segment_count", min_value=2)
                 self._build_float_field("Total Mass (kg)", "mass", min_value=0.01, step=0.05)
 
