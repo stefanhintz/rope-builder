@@ -11,4 +11,5 @@ To enable this extension, run Isaac Sim with the flags `--ext-folder {path_to_ex
 - Shape the cable interactively with the per-joint rotX/rotY/rotZ sliders; **Reset joint targets** snaps all drives back to zero inside the allowed limits.
 - Toggle **Show collisions/Show spline** to swap visibility between the spline visualization and the collision capsules.
 - Create multiple cables by giving each a name before clicking **Create Cable**; use **Set active** to pick which cable the sliders and actions control. Import existing cables on stage by entering their root prim path and clicking **Import cable**.
+- Optional: enter plug prim paths (start/end) and click **Attach plugs** to keep plugs linked to the rope anchors in edit mode and sim.
 

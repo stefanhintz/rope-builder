@@ -44,6 +44,8 @@ class UIBuilder:
         self._import_path_model = ui.SimpleStringModel("/World/cable")
         self._active_path_model = ui.SimpleStringModel("")
         self._known_cables_model = ui.SimpleStringModel("No cables yet.")
+        self._plug_start_model = ui.SimpleStringModel("")
+        self._plug_end_model = ui.SimpleStringModel("")
 
     ###################################################################################
     #           The Functions Below Are Called Automatically By extension.py
@@ -111,6 +113,13 @@ class UIBuilder:
                     ui.StringField(model=self._active_path_model)
                     ui.Button("Set active", clicked_fn=self._on_set_active_cable)
                 ui.Label("", word_wrap=True, model=self._known_cables_model)
+                with ui.HStack(height=0):
+                    ui.Label("Plug start path", width=140, style=get_style())
+                    ui.StringField(model=self._plug_start_model)
+                with ui.HStack(height=0):
+                    ui.Label("Plug end path", width=140, style=get_style())
+                    ui.StringField(model=self._plug_end_model)
+                    ui.Button("Attach plugs", clicked_fn=self._on_attach_plugs)
                 self._create_btn = ui.Button("Create Cable", clicked_fn=self._on_create_rope)
                 self._delete_btn = ui.Button(
                     "Delete Cable", clicked_fn=self._on_delete_rope, enabled=self._controller.rope_exists()
@@ -221,6 +230,7 @@ class UIBuilder:
         self._refresh_visibility_btn()
         self._build_joint_controls()
         self._update_status(f"Cable prims initialized at {prim_path}.", warn=False)
+        self._auto_attach_plugs()
 
     def _on_delete_rope(self):
         self._controller.delete_rope()
@@ -253,6 +263,7 @@ class UIBuilder:
         self._refresh_visibility_btn()
         self._build_joint_controls()
         self._update_status(f"Imported cable at {prim_path}.", warn=False)
+        self._auto_attach_plugs()
 
     def _on_set_active_cable(self):
         path = self._model_string(self._active_path_model, "")
@@ -270,7 +281,24 @@ class UIBuilder:
         self._refresh_subscription_btn()
         self._refresh_visibility_btn()
         self._build_joint_controls()
+        plug_start, plug_end = self._controller.get_plug_paths()
+        if hasattr(self._plug_start_model, "set_value"):
+            self._plug_start_model.set_value(plug_start or "")
+        if hasattr(self._plug_end_model, "set_value"):
+            self._plug_end_model.set_value(plug_end or "")
         self._update_status(f"Active cable set to {path}.", warn=False)
+        self._auto_attach_plugs()
+
+    def _on_attach_plugs(self):
+        start_path = self._model_string(self._plug_start_model, "")
+        end_path = self._model_string(self._plug_end_model, "")
+        try:
+            self._controller.attach_plugs(start_path or None, end_path or None)
+        except (RuntimeError, ValueError) as exc:
+            self._update_status(str(exc), warn=True)
+            return
+        msg = "Attached plugs."
+        self._update_status(msg, warn=False)
 
     def _model_string(self, model, default: str = "") -> str:
         if hasattr(model, "as_string"):
@@ -338,6 +366,14 @@ class UIBuilder:
             self._reset_joint_btn.enabled = exists
             self._subscription_btn.enabled = exists
             self._toggle_vis_btn.enabled = exists
+            if exists:
+                self._auto_attach_plugs()
+
+        plug_start, plug_end = self._controller.get_plug_paths()
+        if hasattr(self._plug_start_model, "set_value"):
+            self._plug_start_model.set_value(plug_start or "")
+        if hasattr(self._plug_end_model, "set_value"):
+            self._plug_end_model.set_value(plug_end or "")
 
         self._active_path_model.set_value(self._controller.active_cable_path() or "")
         self._refresh_known_cables_label()
@@ -419,6 +455,19 @@ class UIBuilder:
         show_curve = self._controller.showing_curve()
         self._toggle_vis_btn.text = "Show collisions" if show_curve else "Show spline"
         self._toggle_vis_btn.enabled = self._controller.rope_exists()
+
+    def _auto_attach_plugs(self):
+        # Auto-attach when paths are present and a cable exists.
+        if not self._controller.rope_exists():
+            return
+        start_path = self._model_string(self._plug_start_model, "")
+        end_path = self._model_string(self._plug_end_model, "")
+        if not start_path and not end_path:
+            return
+        try:
+            self._controller.attach_plugs(start_path or None, end_path or None)
+        except (RuntimeError, ValueError):
+            pass
 
     def _build_joint_controls(self):
         if not self._joint_frame:

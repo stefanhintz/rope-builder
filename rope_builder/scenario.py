@@ -86,6 +86,12 @@ class CableState:
     joint_paths: List[str]
     joint_limits: Dict[str, Dict[str, Tuple[float, float]]]
     joint_drive_targets: Dict[str, Dict[str, float]]
+    anchor_start: str
+    anchor_end: str
+    plug_start_path: Optional[str] = None
+    plug_end_path: Optional[str] = None
+    plug_joint_start: Optional[str] = None
+    plug_joint_end: Optional[str] = None
     show_curve: bool = True
     update_subscription: Optional[Any] = None
 
@@ -171,6 +177,8 @@ class RopeBuilderController:
             cursor += seg_len
 
         curve_path = f"{root_path}/curve"
+        anchor_start = f"{root_path}/anchor_start"
+        anchor_end = f"{root_path}/anchor_end"
         state = CableState(
             root_path=root_path,
             curve_path=curve_path,
@@ -180,12 +188,17 @@ class RopeBuilderController:
             joint_paths=joint_paths,
             joint_limits=joint_limits,
             joint_drive_targets=joint_targets,
+            anchor_start=anchor_start,
+            anchor_end=anchor_end,
         )
         self._cables[root_path] = state
         self._active_path = root_path
 
         self._ensure_curve_prim(stage, state)
         self._update_curve_points(state)
+        self._define_anchor(stage, anchor_start)
+        self._define_anchor(stage, anchor_end)
+        self._update_anchors_and_plugs(state)
         self._apply_visibility_state(state)
 
         carb.log_info(
@@ -236,6 +249,8 @@ class RopeBuilderController:
         joint_targets = {jp: {axis: 0.0 for axis in ROT_AXES} for jp in joint_paths}
 
         curve_path = f"{root_path}/curve"
+        anchor_start = f"{root_path}/anchor_start"
+        anchor_end = f"{root_path}/anchor_end"
         state = CableState(
             root_path=root_path,
             curve_path=curve_path,
@@ -245,12 +260,17 @@ class RopeBuilderController:
             joint_paths=joint_paths,
             joint_limits=joint_limits,
             joint_drive_targets=joint_targets,
+            anchor_start=anchor_start,
+            anchor_end=anchor_end,
         )
         self._cables[root_path] = state
         self._active_path = root_path
 
         self._ensure_curve_prim(stage, state)
         self._update_curve_points(state)
+        self._define_anchor(stage, anchor_start)
+        self._define_anchor(stage, anchor_end)
+        self._update_anchors_and_plugs(state)
         self._apply_visibility_state(state)
         carb.log_info(f"[RopeBuilder] Imported cable at {root_path}.")
         return root_path
@@ -315,9 +335,51 @@ class RopeBuilderController:
         self._apply_visibility_state(state)
         return state.show_curve
 
+    def attach_plugs(self, start_plug: Optional[str] = None, end_plug: Optional[str] = None):
+        """Attach plug rigid bodies to the start/end anchors via fixed joints."""
+        state = self._get_state()
+        stage = self._require_stage()
+
+        # Remove old joints
+        for jp in (state.plug_joint_start, state.plug_joint_end):
+            if jp:
+                prim = stage.GetPrimAtPath(jp)
+                if prim and prim.IsValid():
+                    stage.RemovePrim(jp)
+
+        state.plug_joint_start = None
+        state.plug_joint_end = None
+        state.plug_start_path = start_plug
+        state.plug_end_path = end_plug
+
+        def create_fixed(anchor_path: str, plug_path: str, suffix: str) -> Optional[str]:
+            if not plug_path:
+                return None
+            anchor_prim = stage.GetPrimAtPath(anchor_path)
+            plug_prim = stage.GetPrimAtPath(plug_path)
+            if not anchor_prim or not anchor_prim.IsValid() or not plug_prim or not plug_prim.IsValid():
+                return None
+            joint_path = f"{state.root_path}/plug_joint_{suffix}"
+            fixed = UsdPhysics.FixedJoint.Define(stage, joint_path)
+            fixed.CreateBody0Rel().SetTargets([anchor_path])
+            fixed.CreateBody1Rel().SetTargets([plug_path])
+            fixed.CreateLocalPos0Attr(Gf.Vec3f(0.0, 0.0, 0.0))
+            fixed.CreateLocalPos1Attr(Gf.Vec3f(0.0, 0.0, 0.0))
+            return joint_path
+
+        state.plug_joint_start = create_fixed(state.anchor_start, state.plug_start_path, "start")
+        state.plug_joint_end = create_fixed(state.anchor_end, state.plug_end_path, "end")
+        self._update_anchors_and_plugs(state)
+
     def showing_curve(self) -> bool:
         state = self._get_state(require=False)
         return True if state is None else state.show_curve
+
+    def get_plug_paths(self) -> Tuple[Optional[str], Optional[str]]:
+        state = self._get_state(require=False)
+        if not state:
+            return None, None
+        return state.plug_start_path, state.plug_end_path
 
     def get_joint_control_data(self) -> List[Dict]:
         state = self._get_state(require=False)
@@ -631,6 +693,7 @@ class RopeBuilderController:
 
         if not state.update_subscription:
             self._update_curve_points(state)
+        self._update_anchors_and_plugs(state)
 
     def _compose_joint_rotation(self, targets: Dict[str, float]) -> Gf.Quatd:
         """Compose a rotation quaternion from rotX/Y/Z drive targets in degrees."""
@@ -645,6 +708,65 @@ class RopeBuilderController:
         q = rot_x * rot_y * rot_z
         quatd = q.GetQuat()
         return Gf.Quatd(quatd.GetReal(), quatd.GetImaginary())
+
+    def _define_anchor(self, stage, path: str):
+        prim = stage.GetPrimAtPath(path)
+        if prim and prim.IsValid():
+            return prim
+        return UsdGeom.Xform.Define(stage, Sdf.Path(path)).GetPrim()
+
+    def _update_anchors_and_plugs(self, state: CableState):
+        """Place start/end anchors at rope tips and optionally move attached plugs in edit mode."""
+        stage = self._usd_context.get_stage()
+        if not stage or not state.segment_paths:
+            return
+
+        seg_lengths = state.segment_lengths or [state.params.segment_length] * len(state.segment_paths)
+        first_pose = self._segment_frame(stage, state.segment_paths[0])
+        last_pose = self._segment_frame(stage, state.segment_paths[-1])
+        if first_pose:
+            pos, rot = first_pose
+            dir_x = Gf.Rotation(rot).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
+            tip = pos - dir_x * (seg_lengths[0] * 0.5)
+            self._set_world_transform(state.anchor_start, tip, rot)
+        if last_pose:
+            pos, rot = last_pose
+            dir_x = Gf.Rotation(rot).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
+            tip = pos + dir_x * (seg_lengths[-1] * 0.5)
+            self._set_world_transform(state.anchor_end, tip, rot)
+
+        # Drive plug prims (if specified) to anchors in edit mode so they follow posing.
+        if state.plug_start_path and first_pose:
+            self._match_anchor_to_plug(stage, state.anchor_start, state.plug_start_path)
+        if state.plug_end_path and last_pose:
+            self._match_anchor_to_plug(stage, state.anchor_end, state.plug_end_path)
+
+    def _set_world_transform(self, path: str, pos: Gf.Vec3d, rot: Gf.Quatd):
+        stage = self._usd_context.get_stage()
+        if not stage:
+            return
+        prim = stage.GetPrimAtPath(path)
+        if not prim or not prim.IsValid():
+            return
+        xf = UsdGeom.Xformable(prim)
+        xf.ClearXformOpOrder()
+        xf.AddTranslateOp().Set(Gf.Vec3f(pos))
+        qf = Gf.Quatf(float(rot.GetReal()), Gf.Vec3f(rot.GetImaginary()))
+        xf.AddOrientOp().Set(qf)
+
+    def _match_anchor_to_plug(self, stage, anchor_path: str, plug_path: str):
+        anchor_prim = stage.GetPrimAtPath(anchor_path)
+        plug_prim = stage.GetPrimAtPath(plug_path)
+        if not anchor_prim or not anchor_prim.IsValid() or not plug_prim or not plug_prim.IsValid():
+            return
+        anchor_xf = UsdGeom.Xformable(anchor_prim)
+        m = anchor_xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        pos = m.ExtractTranslation()
+        rot = m.ExtractRotation().GetQuat()
+        plug_xf = UsdGeom.Xformable(plug_prim)
+        plug_xf.ClearXformOpOrder()
+        plug_xf.AddTranslateOp().Set(Gf.Vec3f(pos))
+        plug_xf.AddOrientOp().Set(Gf.Quatf(float(rot.GetReal()), Gf.Vec3f(rot.GetImaginary())))
 
     def _apply_visibility_state(self, state: CableState):
         """Show either the spline or the collision capsules to declutter the view."""
