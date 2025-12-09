@@ -19,6 +19,8 @@ from omni.ui import color as cl
 from isaacsim.gui.components.element_wrappers import CollapsableFrame
 from isaacsim.gui.components.ui_utils import get_style
 from omni.usd import StageEventType
+from omni.kit.widgets.custom import SimpleListView
+from omni.kit.widgets.custom.model import SimpleListModel
 
 from .scenario import ROT_AXES, RopeBuilderController
 
@@ -44,6 +46,10 @@ class UIBuilder:
         self._cable_name_model = ui.SimpleStringModel("cable")
         self._import_path_model = ui.SimpleStringModel("/World/cable")
         self._active_path_model = ui.SimpleStringModel("")
+        # ListView for discovered/known cables
+        self._active_items_model = SimpleListModel()
+        self._active_list_widget = None
+        self._syncing_active_selection = False
         self._known_cables_model = ui.SimpleStringModel("No cables yet.")
         self._plug_start_model = ui.SimpleStringModel("")
         self._plug_end_model = ui.SimpleStringModel("")
@@ -114,7 +120,16 @@ class UIBuilder:
                     ui.Button("Discover cables", clicked_fn=self._on_discover_cables_button)
                 with ui.HStack(height=0):
                     ui.Label("Active cable", width=140, style=get_style())
-                    ui.StringField(model=self._active_path_model)
+                    with ui.VStack(height=0, spacing=2):
+                        self._active_list_widget = SimpleListView(
+                            model=self._active_items_model,
+                            column_widths=[ui.Length(280)],
+                            header_visible=False,
+                            multi_selection=False,
+                            height=100,
+                            selection_changed_fn=self._on_active_list_changed,
+                        )
+                        ui.StringField(model=self._active_path_model)
                     ui.Button("Set active", clicked_fn=self._on_set_active_cable)
                 ui.Label("", word_wrap=True, model=self._known_cables_model)
                 with ui.HStack(height=0):
@@ -206,6 +221,7 @@ class UIBuilder:
             self._update_status("No cables discovered.", warn=True)
 
         self._refresh_known_cables_label()
+        self._refresh_active_list()
         self._active_path_model.set_value(self._controller.active_cable_path() or "")
 
     def _on_param_change(self, key: str, value):
@@ -244,6 +260,7 @@ class UIBuilder:
 
         self._active_path_model.set_value(prim_path)
         self._refresh_known_cables_label()
+        self._refresh_active_list()
         self._delete_btn.enabled = True
         self._reset_joint_btn.enabled = True
         self._subscription_btn.enabled = True
@@ -263,6 +280,7 @@ class UIBuilder:
         self._toggle_vis_btn.enabled = active_exists
         self._active_path_model.set_value(self._controller.active_cable_path() or "")
         self._refresh_known_cables_label()
+        self._refresh_active_list()
         self._refresh_subscription_btn()
         self._refresh_visibility_btn()
         self._clear_joint_controls()
@@ -277,6 +295,7 @@ class UIBuilder:
             return
         self._active_path_model.set_value(prim_path)
         self._refresh_known_cables_label()
+        self._refresh_active_list()
         self._delete_btn.enabled = True
         self._reset_joint_btn.enabled = True
         self._subscription_btn.enabled = True
@@ -296,6 +315,7 @@ class UIBuilder:
             self._update_status(f"No known cable at {path}.", warn=True)
             return
         self._refresh_known_cables_label()
+        self._refresh_active_list()
         self._delete_btn.enabled = True
         self._reset_joint_btn.enabled = True
         self._subscription_btn.enabled = True
@@ -427,11 +447,72 @@ class UIBuilder:
 
         self._active_path_model.set_value(self._controller.active_cable_path() or "")
         self._refresh_known_cables_label()
+        self._refresh_active_list()
         self._refresh_segment_slider_limit(clamp_value=True)
         self._refresh_subscription_btn()
         self._refresh_visibility_btn()
         self._build_joint_controls()
         self._update_status("Ready to create a cable.", warn=False)
+
+    def _refresh_active_list(self):
+        """Populate the list view with known cable root paths and sync selection."""
+        paths = self._controller.list_cable_paths()
+        items = paths if paths else ["(no cables)"]
+        rows = [[p] for p in items]
+
+        self._syncing_active_selection = True
+        try:
+            # Update model contents across Kit versions.
+            if hasattr(self._active_items_model, "set_items"):
+                self._active_items_model.set_items(rows)
+            else:
+                if hasattr(self._active_items_model, "clear"):
+                    self._active_items_model.clear()
+                for r in rows:
+                    if hasattr(self._active_items_model, "append_item"):
+                        self._active_items_model.append_item(r)
+
+            if self._active_list_widget and hasattr(self._active_list_widget, "enabled"):
+                self._active_list_widget.enabled = bool(paths)
+
+            # Clear selection first to avoid out-of-range errors.
+            if self._active_list_widget and hasattr(self._active_list_widget, "selection"):
+                try:
+                    self._active_list_widget.selection = []
+                except Exception:
+                    pass
+
+                if paths:
+                    active = self._controller.active_cable_path()
+                    if active in paths:
+                        idx = paths.index(active)
+                        self._active_list_widget.selection = [idx]
+        finally:
+            self._syncing_active_selection = False
+
+    def _on_active_list_changed(self, _model=None, _item=None):
+        """Handle user selection in the active cable list."""
+        if self._syncing_active_selection:
+            return
+
+        paths = self._controller.list_cable_paths()
+        if not paths or not self._active_list_widget:
+            return
+
+        sel = self._active_list_widget.selection if hasattr(self._active_list_widget, "selection") else []
+        if not sel:
+            return
+
+        idx = sel[0]
+        if idx < 0 or idx >= len(paths):
+            return
+
+        path = paths[idx]
+        if self._controller.set_active_cable(path):
+            self._active_path_model.set_value(path)
+            self._refresh_known_cables_label()
+            self._build_joint_controls()
+            self._update_status(f"Active cable set to {path}.", warn=False)
 
     def _update_status(self, message: str, warn: bool):
         prefix = "Warning: " if warn else ""
