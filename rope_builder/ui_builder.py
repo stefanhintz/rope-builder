@@ -120,6 +120,7 @@ class UIBuilder:
                     ui.Label("Plug end path", width=140, style=get_style())
                     ui.StringField(model=self._plug_end_model)
                     ui.Button("Attach plugs", clicked_fn=self._on_attach_plugs)
+                    ui.Button("Discover plugs", clicked_fn=self._on_discover_plugs)
                 self._create_btn = ui.Button("Create Cable", clicked_fn=self._on_create_rope)
                 self._delete_btn = ui.Button(
                     "Delete Cable", clicked_fn=self._on_delete_rope, enabled=self._controller.rope_exists()
@@ -297,8 +298,25 @@ class UIBuilder:
         except (RuntimeError, ValueError) as exc:
             self._update_status(str(exc), warn=True)
             return
-        msg = "Attached plugs."
+        msg = "Recorded plug paths (no joints created automatically)."
         self._update_status(msg, warn=False)
+
+    def _on_discover_plugs(self):
+        try:
+            start_path, end_path = self._controller.discover_plugs_from_joints()
+        except (RuntimeError, ValueError) as exc:
+            self._update_status(str(exc), warn=True)
+            return
+        if hasattr(self._plug_start_model, "set_value"):
+            self._plug_start_model.set_value(start_path or "")
+        if hasattr(self._plug_end_model, "set_value"):
+            self._plug_end_model.set_value(end_path or "")
+        if start_path or end_path:
+            self._update_status(
+                f"Discovered plugs: start={start_path or 'none'}, end={end_path or 'none'}.", warn=False
+            )
+        else:
+            self._update_status("No joints found on start/end segments to infer plugs.", warn=True)
 
     def _model_string(self, model, default: str = "") -> str:
         if hasattr(model, "as_string"):

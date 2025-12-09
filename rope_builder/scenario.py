@@ -336,47 +336,66 @@ class RopeBuilderController:
         return state.show_curve
 
     def attach_plugs(self, start_plug: Optional[str] = None, end_plug: Optional[str] = None):
-        """Attach plug rigid bodies to the start/end anchors via fixed joints."""
+        """Record plug rigid bodies (user-created joints/manual placement expected)."""
         state = self._get_state()
         stage = self._require_stage()
 
-        # Remove old joints
-        for jp in (state.plug_joint_start, state.plug_joint_end):
-            if jp:
-                prim = stage.GetPrimAtPath(jp)
-                if prim and prim.IsValid():
-                    stage.RemovePrim(jp)
-
-        state.plug_joint_start = None
-        state.plug_joint_end = None
         state.plug_start_path = start_plug
         state.plug_end_path = end_plug
-
-        start_seg = state.segment_paths[0] if state.segment_paths else None
-        end_seg = state.segment_paths[-1] if state.segment_paths else None
-        start_len = state.segment_lengths[0] if state.segment_paths and state.segment_lengths else state.params.segment_length
-        end_len = state.segment_lengths[-1] if state.segment_paths and state.segment_lengths else state.params.segment_length
-        start_offset = -0.5 * start_len
-        end_offset = 0.5 * end_len
-
-        def create_fixed(segment_path: Optional[str], plug_path: str, suffix: str, offset: float) -> Optional[str]:
-            if not plug_path or not segment_path:
-                return None
-            seg_prim = stage.GetPrimAtPath(segment_path)
-            plug_prim = stage.GetPrimAtPath(plug_path)
-            if not seg_prim or not seg_prim.IsValid() or not plug_prim or not plug_prim.IsValid():
-                return None
-            joint_path = f"{state.root_path}/plug_joint_{suffix}"
-            fixed = UsdPhysics.FixedJoint.Define(stage, joint_path)
-            fixed.CreateBody0Rel().SetTargets([segment_path])
-            fixed.CreateBody1Rel().SetTargets([plug_path])
-            fixed.CreateLocalPos0Attr(Gf.Vec3f(offset, 0.0, 0.0))
-            fixed.CreateLocalPos1Attr(Gf.Vec3f(0.0, 0.0, 0.0))
-            return joint_path
-
-        state.plug_joint_start = create_fixed(start_seg, state.plug_start_path, "start", start_offset)
-        state.plug_joint_end = create_fixed(end_seg, state.plug_end_path, "end", end_offset)
+        # No automatic joint authoring; user-created joints are expected.
+        state.plug_joint_start = None
+        state.plug_joint_end = None
         self._update_anchors_and_plugs(state)
+
+    def discover_plugs_from_joints(self) -> Tuple[Optional[str], Optional[str]]:
+        """Find plugs already jointed to the start/end segments and record their paths."""
+        state = self._get_state()
+        stage = self._require_stage()
+
+        if not state.segment_paths:
+            return None, None
+
+        start_seg = state.segment_paths[0]
+        end_seg = state.segment_paths[-1]
+        found_start = None
+        found_end = None
+
+        def other_body(joint_prim, target_seg: str) -> Optional[str]:
+            joint = UsdPhysics.Joint(joint_prim)
+            if not joint:
+                return None
+            body0 = joint.GetBody0Rel()
+            body1 = joint.GetBody1Rel()
+            targets0 = body0.GetTargets() if body0 else []
+            targets1 = body1.GetTargets() if body1 else []
+            target0 = [str(p) for p in targets0]
+            target1 = [str(p) for p in targets1]
+            if target_seg in target0 and target1:
+                return target1[0]
+            if target_seg in target1 and target0:
+                return target0[0]
+            return None
+
+        for prim in stage.Traverse():
+            if found_start and found_end:
+                break
+            if not prim or not prim.IsValid():
+                continue
+            joint = UsdPhysics.Joint(prim)
+            if not joint or not joint.GetPrim().IsValid():
+                continue
+            if not found_start:
+                plug = other_body(prim, start_seg)
+                if plug:
+                    found_start = plug
+            if not found_end:
+                plug = other_body(prim, end_seg)
+                if plug:
+                    found_end = plug
+
+        state.plug_start_path = found_start
+        state.plug_end_path = found_end
+        return found_start, found_end
 
     def showing_curve(self) -> bool:
         state = self._get_state(require=False)
@@ -741,12 +760,6 @@ class RopeBuilderController:
             dir_x = Gf.Rotation(rot).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
             tip = pos + dir_x * (seg_lengths[-1] * 0.5)
             self._set_world_transform(state.anchor_end, tip, rot)
-
-        # Drive plug prims (if specified) to anchors in edit mode so they follow posing.
-        if state.plug_start_path and first_pose:
-            self._match_anchor_to_plug(stage, state.anchor_start, state.plug_start_path)
-        if state.plug_end_path and last_pose:
-            self._match_anchor_to_plug(stage, state.anchor_end, state.plug_end_path)
 
     def _set_world_transform(self, path: str, pos: Gf.Vec3d, rot: Gf.Quatd):
         stage = self._usd_context.get_stage()
