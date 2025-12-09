@@ -86,6 +86,7 @@ class CableState:
     joint_paths: List[str]
     joint_limits: Dict[str, Dict[str, Tuple[float, float]]]
     joint_drive_targets: Dict[str, Dict[str, float]]
+    joint_local_offsets: Dict[str, Dict[str, Any]]
     anchor_start: str
     anchor_end: str
     plug_start_path: Optional[str] = None
@@ -200,6 +201,7 @@ class RopeBuilderController:
             joint_paths=joint_paths,
             joint_limits=joint_limits,
             joint_drive_targets=joint_targets,
+            joint_local_offsets={},
             anchor_start=anchor_start,
             anchor_end=anchor_end,
         )
@@ -287,6 +289,43 @@ class RopeBuilderController:
                 target_val = max(min(target_val, high), low)
                 joint_targets[jp][axis] = target_val
 
+        # Cache joint local offsets (imported from USD)
+        joint_local_offsets: Dict[str, Dict[str, Any]] = {}
+        for jp in joint_paths:
+            joint_prim = stage.GetPrimAtPath(jp)
+            joint = UsdPhysics.Joint(joint_prim) if joint_prim and joint_prim.IsValid() else None
+            if not joint:
+                continue
+
+            # Local positions (BODY0/BODY1 frames)
+            lp0_attr = joint.GetLocalPos0Attr()
+            lp1_attr = joint.GetLocalPos1Attr()
+            lp0 = Gf.Vec3f(lp0_attr.Get()) if lp0_attr and lp0_attr.HasAuthoredValueOpinion() else Gf.Vec3f(0.0)
+            lp1 = Gf.Vec3f(lp1_attr.Get()) if lp1_attr and lp1_attr.HasAuthoredValueOpinion() else Gf.Vec3f(0.0)
+
+            # Local orientations (quats). Isaac Sim UI shows Euler degrees; we store both quat and Euler.
+            lr0_attr = joint.GetLocalRot0Attr()
+            lr1_attr = joint.GetLocalRot1Attr()
+            lr0 = lr0_attr.Get() if lr0_attr and lr0_attr.HasAuthoredValueOpinion() else Gf.Quatf(1.0)
+            lr1 = lr1_attr.Get() if lr1_attr and lr1_attr.HasAuthoredValueOpinion() else Gf.Quatf(1.0)
+
+            def quat_to_euler_deg(q):
+                try:
+                    rot = Gf.Rotation(Gf.Quatd(float(q.GetReal()), Gf.Vec3d(q.GetImaginary())))
+                    # Returns XYZ degrees.
+                    return tuple(float(v) for v in rot.Decompose(Gf.Vec3d(1, 0, 0), Gf.Vec3d(0, 1, 0), Gf.Vec3d(0, 0, 1)))
+                except Exception:
+                    return (0.0, 0.0, 0.0)
+
+            joint_local_offsets[jp] = {
+                "local_pos0": lp0,
+                "local_pos1": lp1,
+                "local_rot0_quat": lr0,
+                "local_rot1_quat": lr1,
+                "local_rot0_euler": quat_to_euler_deg(lr0),
+                "local_rot1_euler": quat_to_euler_deg(lr1),
+            }
+
         curve_path = f"{root_path}/curve"
         anchor_start = f"{root_path}/anchor_start"
         anchor_end = f"{root_path}/anchor_end"
@@ -299,6 +338,7 @@ class RopeBuilderController:
             joint_paths=joint_paths,
             joint_limits=joint_limits,
             joint_drive_targets=joint_targets,
+            joint_local_offsets=joint_local_offsets,
             anchor_start=anchor_start,
             anchor_end=anchor_end,
         )
@@ -1202,3 +1242,18 @@ class RopeBuilderController:
             curve_width_scale=DEFAULT_PARAMS.curve_width_scale,
         )
         return params, limits, seg_lengths
+
+    def get_joint_local_offsets(self) -> List[Dict[str, Any]]:
+        """Return local offset data (as shown in Isaac Sim D6 Joint Properties) for active cable."""
+        state = self._get_state(require=False)
+        if not state:
+            return []
+        out: List[Dict[str, Any]] = []
+        for idx, jp in enumerate(state.joint_paths):
+            offsets = state.joint_local_offsets.get(jp, {})
+            out.append({
+                "index": idx,
+                "path": jp,
+                **offsets,
+            })
+        return out
