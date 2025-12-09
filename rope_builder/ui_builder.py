@@ -530,9 +530,9 @@ class UIBuilder:
                                 with ui.VStack(height=0, spacing=2):
                                     ui.Label(f"{axis}", width=24, style=get_style())
                                     with ui.HStack(height=18, spacing=4):
-                                        ui.FloatSlider(min=low, max=high, model=model, style=get_style(), height=0)
+                                        ui.FloatSlider(min=low, max=high, model=model, style=get_style(), height=18)
                                         ui.Button(
-                                            "",
+                                            "·",
                                             width=18,
                                             height=18,
                                             alignment=ui.Alignment.CENTER,
