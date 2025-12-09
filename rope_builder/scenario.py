@@ -336,57 +336,39 @@ class RopeBuilderController:
         return state.show_curve
 
     def attach_plugs(self, start_plug: Optional[str] = None, end_plug: Optional[str] = None):
-        """Attach plug rigid bodies to the start/end segments via fixed joints (anchors stay for posing)."""
+        """Attach plug rigid bodies to the start/end anchors via fixed joints."""
         state = self._get_state()
         stage = self._require_stage()
 
+        # Remove old joints
+        for jp in (state.plug_joint_start, state.plug_joint_end):
+            if jp:
+                prim = stage.GetPrimAtPath(jp)
+                if prim and prim.IsValid():
+                    stage.RemovePrim(jp)
+
+        state.plug_joint_start = None
+        state.plug_joint_end = None
         state.plug_start_path = start_plug
         state.plug_end_path = end_plug
 
-        # Align anchors (and plugs in edit mode) before building joints so joint frames match tips.
-        self._update_anchors_and_plugs(state)
-
-        start_seg = state.segment_paths[0] if state.segment_paths else None
-        end_seg = state.segment_paths[-1] if state.segment_paths else None
-        start_len = state.segment_lengths[0] if state.segment_paths and state.segment_lengths else state.params.segment_length
-        end_len = state.segment_lengths[-1] if state.segment_paths and state.segment_lengths else state.params.segment_length
-        start_tip_pose = self._segment_tip_pose(stage, start_seg, start_len, -1.0)
-        end_tip_pose = self._segment_tip_pose(stage, end_seg, end_len, 1.0)
-        # Fallback to anchor pose if tip pose is unavailable.
-        if not start_tip_pose and state.anchor_start:
-            start_tip_pose = self._segment_frame(stage, state.anchor_start)
-        if not end_tip_pose and state.anchor_end:
-            end_tip_pose = self._segment_frame(stage, state.anchor_end)
-
-        def deactivate_joint(joint_path: str):
-            prim = stage.GetPrimAtPath(joint_path)
-            if prim and prim.IsValid():
-                prim.SetActive(False)
-
-        def create_fixed(segment_path: Optional[str], plug_path: Optional[str], suffix: str, pivot_pose) -> Optional[str]:
+        def create_fixed(anchor_path: str, plug_path: str, suffix: str) -> Optional[str]:
+            if not plug_path:
+                return None
+            anchor_prim = stage.GetPrimAtPath(anchor_path)
+            plug_prim = stage.GetPrimAtPath(plug_path)
+            if not anchor_prim or not anchor_prim.IsValid() or not plug_prim or not plug_prim.IsValid():
+                return None
             joint_path = f"{state.root_path}/plug_joint_{suffix}"
             fixed = UsdPhysics.FixedJoint.Define(stage, joint_path)
-            prim = fixed.GetPrim()
-            if not segment_path or not plug_path:
-                prim.SetActive(False)
-                return None
-            prim.SetActive(True)
-            pivot = pivot_pose or (Gf.Vec3d(0.0, 0.0, 0.0), Gf.Quatd(1.0, 0.0, 0.0, 0.0))
-            seg_local = self._local_pose_from_world(stage, segment_path, pivot[0], pivot[1])
-            plug_local = self._local_pose_from_world(stage, plug_path, pivot[0], pivot[1])
-            if not seg_local or not plug_local:
-                prim.SetActive(False)
-                return None
-            fixed.CreateBody0Rel().SetTargets([segment_path])
+            fixed.CreateBody0Rel().SetTargets([anchor_path])
             fixed.CreateBody1Rel().SetTargets([plug_path])
-            fixed.CreateLocalPos0Attr(seg_local[0])
-            fixed.CreateLocalRot0Attr(seg_local[1])
-            fixed.CreateLocalPos1Attr(plug_local[0])
-            fixed.CreateLocalRot1Attr(plug_local[1])
+            fixed.CreateLocalPos0Attr(Gf.Vec3f(0.0, 0.0, 0.0))
+            fixed.CreateLocalPos1Attr(Gf.Vec3f(0.0, 0.0, 0.0))
             return joint_path
 
-        state.plug_joint_start = create_fixed(start_seg, state.plug_start_path, "start", start_tip_pose)
-        state.plug_joint_end = create_fixed(end_seg, state.plug_end_path, "end", end_tip_pose)
+        state.plug_joint_start = create_fixed(state.anchor_start, state.plug_start_path, "start")
+        state.plug_joint_end = create_fixed(state.anchor_end, state.plug_end_path, "end")
         self._update_anchors_and_plugs(state)
 
     def showing_curve(self) -> bool:
@@ -668,36 +650,6 @@ class RopeBuilderController:
         pos = Gf.Vec3d(m.ExtractTranslation())
         rot = m.ExtractRotation().GetQuat()
         return pos, rot
-
-    def _segment_tip_pose(
-        self, stage, segment_path: Optional[str], seg_len: float, direction: float
-    ) -> Optional[Tuple[Gf.Vec3d, Gf.Quatd]]:
-        """Return world pose at the tip of a segment along +X/-X (direction=1/-1)."""
-        if not segment_path:
-            return None
-        pose = self._segment_frame(stage, segment_path)
-        if not pose:
-            return None
-        pos, rot = pose
-        dir_x = Gf.Rotation(rot).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
-        tip_pos = pos + dir_x * (direction * seg_len * 0.5)
-        return tip_pos, rot
-
-    def _local_pose_from_world(
-        self, stage, body_path: str, world_pos: Gf.Vec3d, world_rot: Gf.Quatd
-    ) -> Optional[Tuple[Gf.Vec3f, Gf.Quatf]]:
-        """Convert a world-space pose into local space of the given body for joint frames."""
-        prim = stage.GetPrimAtPath(body_path)
-        if not prim or not prim.IsValid():
-            return None
-        xf = UsdGeom.Xformable(prim)
-        m = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-        inv = m.GetInverse()
-        local_pos = inv.Transform(world_pos)
-        body_rot = m.ExtractRotation().GetQuat()
-        body_q = Gf.Quatd(body_rot.GetReal(), body_rot.GetImaginary())
-        local_rot = body_q.GetInverse() * world_rot
-        return Gf.Vec3f(local_pos), Gf.Quatf(float(local_rot.GetReal()), Gf.Vec3f(local_rot.GetImaginary()))
 
     def _world_to_local_points(self, prim, world_pts: List[Gf.Vec3d]) -> List[Gf.Vec3f]:
         """Transform world-space points into the local space of prim."""
