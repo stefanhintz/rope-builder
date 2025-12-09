@@ -499,21 +499,6 @@ class RopeBuilderController:
         self._apply_visibility_state(state)
         return state.show_curve
 
-    def attach_plugs(self, start_plug: Optional[str] = None, end_plug: Optional[str] = None):
-        """Record plug rigid bodies (user-created joints/manual placement expected)."""
-        state = self._get_state()
-        _ = self._require_stage()  # Ensure a stage exists even though we do not author joints here.
-
-        state.plug_start_path = start_plug
-        state.plug_end_path = end_plug
-        # No automatic joint authoring; user-created joints are expected.
-        state.plug_joint_start = None
-        state.plug_joint_end = None
-        state.plug_start_orient_offset = None
-        state.plug_end_orient_offset = None
-        state.dirty = True
-        self._update_anchors_and_plugs(state)
-
     def discover_plugs_from_joints(self) -> Tuple[Optional[str], Optional[str]]:
         """Find plugs already jointed to the start/end segments and record their paths."""
         state = self._get_state()

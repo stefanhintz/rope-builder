@@ -181,10 +181,9 @@ class UIBuilder:
                 with ui.HStack(height=0):
                     ui.Label("Plug start path", width=140, style=get_style())
                     ui.StringField(model=self._plug_start_model)
-                with ui.HStack(height=0):
+                with ui.HStack(height=0, spacing=8):
                     ui.Label("Plug end path", width=140, style=get_style())
                     ui.StringField(model=self._plug_end_model)
-                    ui.Button("Attach plugs", clicked_fn=self._on_attach_plugs)
                     ui.Button("Discover plugs", clicked_fn=self._on_discover_plugs)
 
                 with ui.HStack(height=0, spacing=8):
@@ -362,7 +361,6 @@ class UIBuilder:
         self._refresh_visibility_btn()
         self._build_joint_controls()
         self._update_status(f"Cable prims initialized at {prim_path}.", warn=False)
-        self._auto_attach_plugs()
 
     def _on_delete_rope(self):
         self._controller.delete_rope()
@@ -397,7 +395,6 @@ class UIBuilder:
         self._refresh_visibility_btn()
         self._build_joint_controls()
         self._update_status(f"Imported cable at {prim_path}.", warn=False)
-        self._auto_attach_plugs()
 
     def _on_set_active_cable(self):
         path = self._model_string(self._active_path_model, "")
@@ -422,18 +419,6 @@ class UIBuilder:
         if hasattr(self._plug_end_model, "set_value"):
             self._plug_end_model.set_value(plug_end or "")
         self._update_status(f"Active cable set to {path}.", warn=False)
-        self._auto_attach_plugs()
-
-    def _on_attach_plugs(self):
-        start_path = self._model_string(self._plug_start_model, "")
-        end_path = self._model_string(self._plug_end_model, "")
-        try:
-            self._controller.attach_plugs(start_path or None, end_path or None)
-        except (RuntimeError, ValueError) as exc:
-            self._update_status(str(exc), warn=True)
-            return
-        msg = "Recorded plug paths (no joints created automatically)."
-        self._update_status(msg, warn=False)
 
     def _on_discover_plugs(self):
         try:
@@ -540,9 +525,6 @@ class UIBuilder:
                 self._subscription_btn.enabled = has_cables
             if self._toggle_vis_btn:
                 self._toggle_vis_btn.enabled = has_cables
-
-            if active_exists:
-                self._auto_attach_plugs()
 
         plug_start, plug_end = self._controller.get_plug_paths()
         if hasattr(self._plug_start_model, "set_value"):
@@ -720,19 +702,6 @@ class UIBuilder:
             self._update_status("Spline updates active for all cables.", warn=False)
 
         self._refresh_subscription_btn()
-
-    def _auto_attach_plugs(self):
-        # Auto-attach when paths are present and a cable exists.
-        if not self._controller.rope_exists():
-            return
-        start_path = self._model_string(self._plug_start_model, "")
-        end_path = self._model_string(self._plug_end_model, "")
-        if not start_path and not end_path:
-            return
-        try:
-            self._controller.attach_plugs(start_path or None, end_path or None)
-        except (RuntimeError, ValueError):
-            pass
 
     def _build_joint_controls(self):
         if not self._joint_frame:
