@@ -691,6 +691,15 @@ class UIBuilder:
         self._joint_slider_models = {}
         data = self._controller.get_joint_control_data()
 
+        # Local offsets (as shown in Isaac Sim D6 Joint Properties -> Local Offsets).
+        # We use body0 local orientation XYZ (Euler degrees) to seed the UI sliders on discovery/import.
+        offsets_by_index = {}
+        try:
+            offsets = self._controller.get_joint_local_offsets()
+            offsets_by_index = {o.get("index"): o for o in offsets}
+        except Exception:
+            offsets_by_index = {}
+
         with self._joint_frame:
             if not data:
                 ui.Label("Create a cable to edit joint drive targets.", style=get_style())
@@ -707,7 +716,19 @@ class UIBuilder:
                         with ui.HStack(height=0, spacing=8):
                             for axis in ROT_AXES:
                                 low, high = limits.get(axis, (-180.0, 180.0))
-                                model = ui.SimpleFloatModel(targets.get(axis, 0.0))
+                                # Prefer imported local offset orientation for initial slider value.
+                                init_val = targets.get(axis, 0.0)
+                                offs = offsets_by_index.get(idx)
+                                if offs:
+                                    euler = offs.get("local_rot0_euler")
+                                    if euler and len(euler) == 3:
+                                        if axis == "rotX":
+                                            init_val = float(euler[0])
+                                        elif axis == "rotY":
+                                            init_val = float(euler[1])
+                                        elif axis == "rotZ":
+                                            init_val = float(euler[2])
+                                model = ui.SimpleFloatModel(init_val)
                                 model.add_value_changed_fn(
                                     lambda m, i=idx, ax=axis: self._on_joint_slider_changed(i, ax, m.as_float)
                                 )
