@@ -158,13 +158,19 @@ class RopeBuilderController:
 
         segment_plan = self._segment_plan(params)
         total_len = sum(length for _, length in segment_plan)
+        # Give start/end segments only a fraction of the mass of regular segments based on length ratio.
+        weights = [
+            (length / params.segment_length) if params.segment_length > 0.0 else 1.0 for _, length in segment_plan
+        ]
+        weight_sum = sum(weights) if weights else 1.0
+        mass_per_weight = params.mass / weight_sum if weight_sum > 0.0 else 0.0
         cursor = -0.5 * total_len
 
         prev_segment_path = None
         prev_len = None
-        for name, seg_len in segment_plan:
+        for (name, seg_len), weight in zip(segment_plan, weights):
             center = Gf.Vec3d(cursor + 0.5 * seg_len, 0.0, 0.0)
-            seg_mass = params.mass * (seg_len / total_len) if total_len > 0.0 else params.segment_mass
+            seg_mass = mass_per_weight * weight
             segment_path = self._create_segment(stage, root_path, params, name, seg_len, center, seg_mass)
             if prev_segment_path and prev_len is not None:
                 joint_path, limits = self._create_d6_joint(
