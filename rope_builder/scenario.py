@@ -793,7 +793,7 @@ class RopeBuilderController:
             dt = 1.0 / 60.0
 
         state._accum_dt += dt
-        if state._accum_dt < (1.0 / 20.0):  # ~20 Hz
+        if state._accum_dt < (1.0 / 30.0):  # ~30 Hz
             return
         state._accum_dt = 0.0
 
