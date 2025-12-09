@@ -91,12 +91,6 @@ class CableState:
     joint_local_offsets: Dict[str, Dict[str, Any]]
     anchor_start: str
     anchor_end: str
-    plug_start_path: Optional[str] = None
-    plug_end_path: Optional[str] = None
-    plug_joint_start: Optional[str] = None
-    plug_joint_end: Optional[str] = None
-    plug_start_orient_offset: Optional[Gf.Quatd] = None
-    plug_end_orient_offset: Optional[Gf.Quatd] = None
     show_curve: bool = True
     update_subscription: Optional[Any] = None
     # Performance helpers
@@ -216,7 +210,7 @@ class RopeBuilderController:
         self._update_curve_points(state)
         self._define_anchor(stage, anchor_start)
         self._define_anchor(stage, anchor_end)
-        self._update_anchors_and_plugs(state)
+        self._update_anchors(state)
         self._apply_visibility_state(state)
 
         carb.log_info(
@@ -372,7 +366,7 @@ class RopeBuilderController:
         self._update_curve_points(state)
         self._define_anchor(stage, anchor_start)
         self._define_anchor(stage, anchor_end)
-        self._update_anchors_and_plugs(state)
+        self._update_anchors(state)
         self._apply_visibility_state(state)
         carb.log_info(f"[RopeBuilder] Imported cable at {root_path}.")
         return root_path
@@ -499,68 +493,9 @@ class RopeBuilderController:
         self._apply_visibility_state(state)
         return state.show_curve
 
-    def discover_plugs_from_joints(self) -> Tuple[Optional[str], Optional[str]]:
-        """Find plugs already jointed to the start/end segments and record their paths."""
-        state = self._get_state()
-        stage = self._require_stage()
-
-        if not state.segment_paths:
-            return None, None
-
-        start_seg = state.segment_paths[0]
-        end_seg = state.segment_paths[-1]
-        found_start = None
-        found_end = None
-
-        def other_body(joint_prim, target_seg: str) -> Optional[str]:
-            joint = UsdPhysics.Joint(joint_prim)
-            if not joint:
-                return None
-            body0 = joint.GetBody0Rel()
-            body1 = joint.GetBody1Rel()
-            targets0 = body0.GetTargets() if body0 else []
-            targets1 = body1.GetTargets() if body1 else []
-            target0 = [str(p) for p in targets0]
-            target1 = [str(p) for p in targets1]
-            if target_seg in target0 and target1:
-                return target1[0]
-            if target_seg in target1 and target0:
-                return target0[0]
-            return None
-
-        for prim in stage.Traverse():
-            if found_start and found_end:
-                break
-            if not prim or not prim.IsValid():
-                continue
-            joint = UsdPhysics.Joint(prim)
-            if not joint or not joint.GetPrim().IsValid():
-                continue
-            if not found_start:
-                plug = other_body(prim, start_seg)
-                if plug:
-                    found_start = plug
-            if not found_end:
-                plug = other_body(prim, end_seg)
-                if plug:
-                    found_end = plug
-
-        state.plug_start_path = found_start
-        state.plug_end_path = found_end
-        state.plug_start_orient_offset = None
-        state.plug_end_orient_offset = None
-        state.dirty = True
-        return found_start, found_end
-
     def showing_curve(self) -> bool:
         state = self._get_state(require=False)
         return True if state is None else state.show_curve
-
-    def get_plug_paths(self) -> Tuple[Optional[str], Optional[str]]:
-        state = self._get_state(require=False)
-        if not state:
-            return None, None
-        return state.plug_start_path, state.plug_end_path
 
     def get_joint_control_data(self) -> List[Dict]:
         state = self._get_state(require=False)
@@ -912,7 +847,7 @@ class RopeBuilderController:
 
         # Full update when dirty.
         self._update_curve_points(state)
-        self._update_anchors_and_plugs(state)
+        self._update_anchors(state)
 
         # Refresh endpoint cache after update.
         if stage and state.segment_paths:
@@ -984,7 +919,7 @@ class RopeBuilderController:
 
         if not state.update_subscription:
             self._update_curve_points(state)
-        self._update_anchors_and_plugs(state)
+        self._update_anchors(state)
 
         state.dirty = True
 
@@ -1008,30 +943,8 @@ class RopeBuilderController:
             return prim
         return UsdGeom.Xform.Define(stage, Sdf.Path(path)).GetPrim()
 
-    def _ensure_plug_orientation_offsets(
-        self,
-        stage,
-        state: CableState,
-        first_pose: Optional[Tuple[Gf.Vec3d, Gf.Quatd]],
-        last_pose: Optional[Tuple[Gf.Vec3d, Gf.Quatd]],
-    ):
-        """Cache the initial plug-to-anchor rotation offset so user-set plug rotation is preserved."""
-        if state.plug_start_path and state.plug_start_orient_offset is None and first_pose:
-            plug_pose = self._segment_frame(stage, state.plug_start_path)
-            if plug_pose:
-                anchor_rot = first_pose[1]
-                plug_rot = plug_pose[1]
-                state.plug_start_orient_offset = anchor_rot.GetInverse() * plug_rot
-
-        if state.plug_end_path and state.plug_end_orient_offset is None and last_pose:
-            plug_pose = self._segment_frame(stage, state.plug_end_path)
-            if plug_pose:
-                anchor_rot = last_pose[1]
-                plug_rot = plug_pose[1]
-                state.plug_end_orient_offset = anchor_rot.GetInverse() * plug_rot
-
-    def _update_anchors_and_plugs(self, state: CableState):
-        """Place start/end anchors at rope tips and optionally move attached plugs in edit mode."""
+    def _update_anchors(self, state: CableState):
+        """Place start/end anchors at rope tips."""
         stage = self._usd_context.get_stage()
         if not stage or not state.segment_paths:
             return
@@ -1050,15 +963,6 @@ class RopeBuilderController:
             tip = pos + dir_x * (seg_lengths[-1] * 0.5)
             self._set_world_transform(state.anchor_end, tip, rot)
 
-        # Capture plug orientation offsets once, so user-set rotation is preserved relative to anchors.
-        self._ensure_plug_orientation_offsets(stage, state, first_pose, last_pose)
-
-        # Move plug prims with anchors in edit mode (position + orientation for posing).
-        if state.plug_start_path and first_pose:
-            self._match_anchor_pose(stage, state.anchor_start, state.plug_start_path, state.plug_start_orient_offset)
-        if state.plug_end_path and last_pose:
-            self._match_anchor_pose(stage, state.anchor_end, state.plug_end_path, state.plug_end_orient_offset)
-
     def _set_world_transform(self, path: str, pos: Gf.Vec3d, rot: Gf.Quatd):
         stage = self._usd_context.get_stage()
         if not stage:
@@ -1072,56 +976,6 @@ class RopeBuilderController:
         qf = Gf.Quatf(float(rot.GetReal()), Gf.Vec3f(rot.GetImaginary()))
         xf.AddOrientOp().Set(qf)
 
-    def _match_anchor_pose(self, stage, anchor_path: str, plug_path: str, rot_offset: Optional[Gf.Quatd]):
-        """Drive plug position to anchor and orientation by applying the cached offset (if present)."""
-        anchor_prim = stage.GetPrimAtPath(anchor_path)
-        plug_prim = stage.GetPrimAtPath(plug_path)
-        if not anchor_prim or not anchor_prim.IsValid() or not plug_prim or not plug_prim.IsValid():
-            return
-        anchor_xf = UsdGeom.Xformable(anchor_prim)
-        m = anchor_xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-        pos = m.ExtractTranslation()
-        rot = m.ExtractRotation().GetQuat()
-        if rot_offset:
-            rot = rot * rot_offset
-
-        plug_xf = UsdGeom.Xformable(plug_prim)
-        translate_op = None
-        orient_op = None
-        for op in plug_xf.GetOrderedXformOps():
-            if op.GetOpType() == UsdGeom.XformOp.TypeTranslate and translate_op is None:
-                translate_op = op
-            if op.GetOpType() == UsdGeom.XformOp.TypeOrient and orient_op is None:
-                orient_op = op
-            if translate_op and orient_op:
-                break
-
-        if not translate_op:
-            translate_op = plug_xf.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionDouble)
-        translate_op.Set(Gf.Vec3d(pos) if translate_op.GetPrecision() == UsdGeom.XformOp.PrecisionDouble else Gf.Vec3f(pos))
-
-        if not orient_op:
-            orient_op = plug_xf.AddOrientOp(precision=UsdGeom.XformOp.PrecisionDouble)
-        if rot_offset:
-            if orient_op.GetPrecision() == UsdGeom.XformOp.PrecisionDouble:
-                orient_op.Set(rot)
-            else:
-                orient_op.Set(Gf.Quatf(float(rot.GetReal()), Gf.Vec3f(rot.GetImaginary())))
-        # If no offset was captured, leave orientation untouched so manual edits are preserved.
-
-    def _match_anchor_to_plug(self, stage, anchor_path: str, plug_path: str):
-        anchor_prim = stage.GetPrimAtPath(anchor_path)
-        plug_prim = stage.GetPrimAtPath(plug_path)
-        if not anchor_prim or not anchor_prim.IsValid() or not plug_prim or not plug_prim.IsValid():
-            return
-        anchor_xf = UsdGeom.Xformable(anchor_prim)
-        m = anchor_xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-        pos = m.ExtractTranslation()
-        rot = m.ExtractRotation().GetQuat()
-        plug_xf = UsdGeom.Xformable(plug_prim)
-        plug_xf.ClearXformOpOrder()
-        plug_xf.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionDouble).Set(Gf.Vec3d(pos))
-        plug_xf.AddOrientOp(precision=UsdGeom.XformOp.PrecisionDouble).Set(rot)
 
     def _apply_visibility_state(self, state: CableState):
         """Show either the spline or the collision capsules to declutter the view."""

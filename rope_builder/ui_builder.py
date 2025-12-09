@@ -86,8 +86,6 @@ class UIBuilder:
         self._active_tree_view = None
         self._syncing_active_selection = False
         self._known_cables_model = ui.SimpleStringModel("No cables yet.")
-        self._plug_start_model = ui.SimpleStringModel("")
-        self._plug_end_model = ui.SimpleStringModel("")
         self._syncing_joint_build = False
         self._joint_limit_hint_model = ui.SimpleStringModel("")
 
@@ -171,20 +169,12 @@ class UIBuilder:
                 ui.Label("", word_wrap=True, model=self._known_cables_model)
 
         # ------------------------------------------------------------------
-        # 3) Active cable controls (plugs + joint drive targets)
+        # 3) Active cable controls (joint drive targets)
         # ------------------------------------------------------------------
         with CollapsableFrame("Active Cable Controls", collapsed=False):
             with ui.VStack(style=get_style(), spacing=8, height=0):
                 ui.Label("Active cable", style=get_style())
                 ui.StringField(model=self._active_path_model)
-
-                with ui.HStack(height=0):
-                    ui.Label("Plug start path", width=140, style=get_style())
-                    ui.StringField(model=self._plug_start_model)
-                with ui.HStack(height=0, spacing=8):
-                    ui.Label("Plug end path", width=140, style=get_style())
-                    ui.StringField(model=self._plug_end_model)
-                    ui.Button("Discover plugs", clicked_fn=self._on_discover_plugs)
 
                 with ui.HStack(height=0, spacing=8):
                     # Global spline subscribe/unsubscribe for all cables.
@@ -413,29 +403,7 @@ class UIBuilder:
         self._refresh_subscription_btn()
         self._refresh_visibility_btn()
         self._build_joint_controls()
-        plug_start, plug_end = self._controller.get_plug_paths()
-        if hasattr(self._plug_start_model, "set_value"):
-            self._plug_start_model.set_value(plug_start or "")
-        if hasattr(self._plug_end_model, "set_value"):
-            self._plug_end_model.set_value(plug_end or "")
         self._update_status(f"Active cable set to {path}.", warn=False)
-
-    def _on_discover_plugs(self):
-        try:
-            start_path, end_path = self._controller.discover_plugs_from_joints()
-        except (RuntimeError, ValueError) as exc:
-            self._update_status(str(exc), warn=True)
-            return
-        if hasattr(self._plug_start_model, "set_value"):
-            self._plug_start_model.set_value(start_path or "")
-        if hasattr(self._plug_end_model, "set_value"):
-            self._plug_end_model.set_value(end_path or "")
-        if start_path or end_path:
-            self._update_status(
-                f"Discovered plugs: start={start_path or 'none'}, end={end_path or 'none'}.", warn=False
-            )
-        else:
-            self._update_status("No joints found on start/end segments to infer plugs.", warn=True)
 
     def _model_string(self, model, default: str = "") -> str:
         if hasattr(model, "as_string"):
@@ -525,12 +493,6 @@ class UIBuilder:
                 self._subscription_btn.enabled = has_cables
             if self._toggle_vis_btn:
                 self._toggle_vis_btn.enabled = has_cables
-
-        plug_start, plug_end = self._controller.get_plug_paths()
-        if hasattr(self._plug_start_model, "set_value"):
-            self._plug_start_model.set_value(plug_start or "")
-        if hasattr(self._plug_end_model, "set_value"):
-            self._plug_end_model.set_value(plug_end or "")
 
         self._active_path_model.set_value(self._controller.active_cable_path() or "")
         self._refresh_known_cables_label()
