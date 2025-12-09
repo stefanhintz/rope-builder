@@ -294,6 +294,10 @@ class UIBuilder:
         if self._add_handle_btn:
             self._add_handle_btn.enabled = active_exists
 
+        # Automatically subscribe spline updates for all discovered cables.
+        if self._controller.list_cable_paths():
+            self._controller.start_curve_updates_all()
+
         # Global actions as soon as we have any cables, even if none is "active" yet.
         has_cables = bool(self._controller.list_cable_paths())
         if self._subscription_btn:
@@ -365,6 +369,9 @@ class UIBuilder:
             self._fit_anchors_btn.enabled = True
         if self._add_handle_btn:
             self._add_handle_btn.enabled = True
+
+        # Automatically subscribe spline updates for all cables.
+        self._controller.start_curve_updates_all()
         self._subscription_btn.enabled = True
         self._toggle_vis_btn.enabled = True
         self._refresh_subscription_btn()
@@ -415,6 +422,9 @@ class UIBuilder:
             self._fit_anchors_btn.enabled = True
         if self._add_handle_btn:
             self._add_handle_btn.enabled = True
+
+        # Automatically subscribe spline updates for all cables.
+        self._controller.start_curve_updates_all()
         self._subscription_btn.enabled = True
         self._toggle_vis_btn.enabled = True
         self._refresh_subscription_btn()
@@ -588,6 +598,10 @@ class UIBuilder:
                 self._fit_anchors_btn.enabled = active_exists
             if self._add_handle_btn:
                 self._add_handle_btn.enabled = active_exists
+
+            # Automatically subscribe spline updates when UI resets and cables exist.
+            if self._controller.list_cable_paths():
+                self._controller.start_curve_updates_all()
 
             # Global actions depend on having any cables at all.
             has_cables = bool(self._controller.list_cable_paths())
