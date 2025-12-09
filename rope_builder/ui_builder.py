@@ -118,6 +118,10 @@ class UIBuilder:
                 with ui.HStack(height=0):
                     ui.Label("Discover cables", width=140, style=get_style())
                     ui.Button("Discover cables", clicked_fn=self._on_discover_cables_button)
+                # --- Dummy/test button for Actions section ---
+                with ui.HStack(height=0):
+                    ui.Label("Test list", width=140, style=get_style())
+                    ui.Button("Populate dummy", clicked_fn=self._on_populate_dummy_list)
                 with ui.HStack(height=0):
                     ui.Label("Active cable", width=140, style=get_style())
                     with ui.VStack(height=0, spacing=2):
@@ -223,6 +227,47 @@ class UIBuilder:
         self._refresh_known_cables_label()
         self._refresh_active_list()
         self._active_path_model.set_value(self._controller.active_cable_path() or "")
+
+    def _on_populate_dummy_list(self):
+        """Populate the ListView with dummy data to verify ListView wiring."""
+        dummy_paths = ["/World/dummy_cable_A", "/World/dummy_cable_B", "/World/dummy_cable_C"]
+        rows = [[p] for p in dummy_paths]
+
+        self._syncing_active_selection = True
+        try:
+            # Clear selection before changing contents.
+            if hasattr(self._active_items_model, "clear_selection"):
+                try:
+                    self._active_items_model.clear_selection()
+                except Exception:
+                    pass
+            if self._active_list_widget and hasattr(self._active_list_widget, "selection"):
+                try:
+                    self._active_list_widget.selection = []
+                except Exception:
+                    pass
+
+            if hasattr(self._active_items_model, "set_items"):
+                self._active_items_model.set_items(rows)
+            else:
+                if hasattr(self._active_items_model, "clear"):
+                    self._active_items_model.clear()
+                for r in rows:
+                    if hasattr(self._active_items_model, "append_item"):
+                        self._active_items_model.append_item(r)
+
+            if self._active_list_widget and hasattr(self._active_list_widget, "enabled"):
+                self._active_list_widget.enabled = True
+
+            # Select first item safely.
+            if self._active_list_widget and hasattr(self._active_list_widget, "selection"):
+                self._active_list_widget.selection = [0]
+        finally:
+            self._syncing_active_selection = False
+
+        # Update text + status without touching controller.
+        self._active_path_model.set_value(dummy_paths[0])
+        self._update_status("Dummy list populated.", warn=False)
 
     def _on_param_change(self, key: str, value):
         if self._syncing_models:
