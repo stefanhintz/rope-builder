@@ -79,6 +79,7 @@ class UIBuilder:
         self._joint_frame = None
         self._joint_slider_models = {}
         self._toggle_vis_btn = None
+        self._fit_anchors_btn = None
         self._cable_name_model = ui.SimpleStringModel("cable")
         self._active_path_model = ui.SimpleStringModel("")
         # TreeView for discovered/known cables
@@ -185,6 +186,9 @@ class UIBuilder:
                     )
                     self._reset_joint_btn = ui.Button(
                         "Reset joint targets", clicked_fn=self._on_reset_joints, enabled=False
+                    )
+                    self._fit_anchors_btn = ui.Button(
+                        "Fit rope to anchors", clicked_fn=self._on_fit_to_anchors, enabled=False
                     )
 
                 ui.Label("Joint drive targets", style=get_style())
@@ -344,6 +348,8 @@ class UIBuilder:
         self._refresh_active_tree()
         self._delete_btn.enabled = True
         self._reset_joint_btn.enabled = True
+        if self._fit_anchors_btn:
+            self._fit_anchors_btn.enabled = True
         self._subscription_btn.enabled = True
         self._toggle_vis_btn.enabled = True
         self._refresh_subscription_btn()
@@ -365,6 +371,8 @@ class UIBuilder:
         self._reset_joint_btn.enabled = active_exists
         self._subscription_btn.enabled = active_exists
         self._toggle_vis_btn.enabled = active_exists
+        if self._fit_anchors_btn:
+            self._fit_anchors_btn.enabled = active_exists
         self._active_path_model.set_value(self._controller.active_cable_path() or "")
         self._refresh_known_cables_label()
         self._refresh_active_tree()
@@ -388,6 +396,8 @@ class UIBuilder:
         self._refresh_active_tree()
         self._delete_btn.enabled = True
         self._reset_joint_btn.enabled = True
+        if self._fit_anchors_btn:
+            self._fit_anchors_btn.enabled = True
         self._subscription_btn.enabled = True
         self._toggle_vis_btn.enabled = True
         self._refresh_subscription_btn()
@@ -407,6 +417,8 @@ class UIBuilder:
         self._refresh_active_tree()
         self._delete_btn.enabled = True
         self._reset_joint_btn.enabled = True
+        if self._fit_anchors_btn:
+            self._fit_anchors_btn.enabled = True
         self._subscription_btn.enabled = True
         self._toggle_vis_btn.enabled = True
         self._refresh_subscription_btn()
@@ -458,6 +470,37 @@ class UIBuilder:
             if model and abs(model.as_float - clamped) > 1e-6:
                 model.set_value(clamped)
 
+    def _on_fit_to_anchors(self):
+        """Repose the active cable along a geometric path between its anchors."""
+        if not self._controller.rope_exists():
+            self._update_status("Create or import a cable before fitting to anchors.", warn=True)
+            return
+
+        try:
+            result = self._controller.fit_rope_to_anchors()
+        except Exception as exc:
+            self._update_status(str(exc), warn=True)
+            return
+
+        if not result:
+            self._update_status("Could not fit rope to anchors. Ensure anchors exist on this cable.", warn=True)
+            return
+
+        rope_len, path_len = result
+
+        # Rebuild joint controls so sliders reflect the updated pose.
+        self._build_joint_controls()
+
+        mismatch = abs(path_len - rope_len)
+        if mismatch > 1e-3:
+            msg = (
+                f"Anchor path length ({path_len:.3f} m) differs from rope length "
+                f"({rope_len:.3f} m). Pose approximated; segment limits are ignored."
+            )
+            self._update_status(msg, warn=True)
+        else:
+            self._update_status("Rope pose fitted between anchors.", warn=False)
+
     def _on_toggle_visibility(self):
         paths = self._controller.list_cable_paths()
         if not paths:
@@ -495,6 +538,8 @@ class UIBuilder:
             active_exists = self._controller.rope_exists()
             self._delete_btn.enabled = True
             self._reset_joint_btn.enabled = active_exists
+            if self._fit_anchors_btn:
+                self._fit_anchors_btn.enabled = active_exists
 
             # Global actions depend on having any cables at all.
             has_cables = bool(self._controller.list_cable_paths())

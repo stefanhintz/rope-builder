@@ -563,6 +563,179 @@ class RopeBuilderController:
                 if low <= 0.0 <= high:
                     self.set_joint_drive_target(idx, axis, 0.0, apply_pose=True)
 
+    def fit_rope_to_anchors(self, root_path: Optional[str] = None) -> Optional[Tuple[float, float]]:
+        """Repose the rope along a geometric curve between anchors in edit mode.
+
+        This preserves per-segment lengths, ignores joint limits, and may introduce
+        error if the anchor path length does not match the rope length. The caller
+        can use the returned (rope_length, path_length) to display a warning.
+        """
+        state = self._get_state(root_path, require=False)
+        stage = self._usd_context.get_stage()
+        if not state or not stage or not state.segment_paths:
+            return None
+
+        # Anchor prims are used as authoring handles: read their current world-space
+        # frames and build a smooth curve between them.
+        start_pose = self._segment_frame(stage, state.anchor_start)
+        end_pose = self._segment_frame(stage, state.anchor_end)
+        if not start_pose or not end_pose:
+            carb.log_warn("[RopeBuilder] Cannot fit rope: anchors not found or invalid.")
+            return None
+
+        p0, r0 = start_pose
+        p1, r1 = end_pose
+
+        seg_lengths = state.segment_lengths or [state.params.segment_length] * len(state.segment_paths)
+        rope_len = float(sum(seg_lengths)) if seg_lengths else float(state.params.length)
+        if rope_len <= 1e-6:
+            carb.log_warn("[RopeBuilder] Cannot fit rope: total rope length is zero.")
+            return None
+
+        # Tangent directions derived from anchor orientations (their +X axis).
+        dir0 = Gf.Rotation(r0).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
+        dir1 = Gf.Rotation(r1).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
+        if dir0.GetLength() < 1e-6:
+            dir0 = Gf.Vec3d(1.0, 0.0, 0.0)
+        if dir1.GetLength() < 1e-6:
+            dir1 = Gf.Vec3d(1.0, 0.0, 0.0)
+
+        delta = p1 - p0
+        straight_dist = delta.GetLength()
+        # Choose a tangent magnitude that gives a gentle arc; fall back to rope_len
+        # for nearly coincident anchors.
+        tangent_scale = straight_dist * 0.5
+        if tangent_scale < 1e-4:
+            tangent_scale = max(rope_len * 0.25, 1e-3)
+        m0 = dir0 * tangent_scale
+        m1 = dir1 * tangent_scale
+
+        def hermite_point(t: float) -> Gf.Vec3d:
+            t = max(0.0, min(1.0, float(t)))
+            t2 = t * t
+            t3 = t2 * t
+            h00 = 2.0 * t3 - 3.0 * t2 + 1.0
+            h10 = t3 - 2.0 * t2 + t
+            h01 = -2.0 * t3 + 3.0 * t2
+            h11 = t3 - t2
+            return (p0 * h00) + (m0 * h10) + (p1 * h01) + (m1 * h11)
+
+        def hermite_tangent(t: float) -> Gf.Vec3d:
+            t = max(0.0, min(1.0, float(t)))
+            t2 = t * t
+            dh00 = 6.0 * t2 - 6.0 * t
+            dh10 = 3.0 * t2 - 4.0 * t + 1.0
+            dh01 = -6.0 * t2 + 6.0 * t
+            dh11 = 3.0 * t2 - 2.0 * t
+            return (p0 * dh00) + (m0 * dh10) + (p1 * dh01) + (m1 * dh11)
+
+        # Sample the curve to approximate arc length for parameterization.
+        num_samples = max(32, len(state.segment_paths) * 4)
+        ts: List[float] = []
+        pts: List[Gf.Vec3d] = []
+        cumulative: List[float] = []
+
+        last_pos = None
+        length_accum = 0.0
+        for i in range(num_samples):
+            t = float(i) / float(max(num_samples - 1, 1))
+            pos = hermite_point(t)
+            ts.append(t)
+            pts.append(pos)
+            if last_pos is not None:
+                length_accum += float((pos - last_pos).GetLength())
+            cumulative.append(length_accum)
+            last_pos = pos
+
+        curve_len = float(length_accum)
+        use_straight = curve_len <= 1e-6
+        if use_straight:
+            # Degenerate curve; fall back to straight line between anchors.
+            curve_len = float(straight_dist)
+
+        def sample_pos_and_dir(s: float) -> Tuple[Gf.Vec3d, Gf.Vec3d]:
+            """Return a point and approximate tangent direction at normalized arc-length s."""
+            s_clamped = max(0.0, min(1.0, float(s)))
+            if use_straight or curve_len <= 1e-6:
+                pos = p0 + delta * s_clamped
+                d = Gf.Vec3d(delta)
+                if d.GetLength() < 1e-6:
+                    d = dir0
+                else:
+                    d.Normalize()
+                return pos, d
+
+            target_len = s_clamped * curve_len
+            # Find the first sample with cumulative length >= target_len.
+            idx = 0
+            while idx < len(cumulative) and cumulative[idx] < target_len:
+                idx += 1
+
+            if idx <= 0:
+                t_val = ts[0]
+            elif idx >= len(cumulative):
+                t_val = ts[-1]
+            else:
+                l0 = cumulative[idx - 1]
+                l1 = cumulative[idx]
+                if l1 <= l0:
+                    alpha = 0.0
+                else:
+                    alpha = (target_len - l0) / (l1 - l0)
+                t_val = ts[idx - 1] * (1.0 - alpha) + ts[idx] * alpha
+
+            pos = hermite_point(t_val)
+            tan = hermite_tangent(t_val)
+            if tan.GetLength() > 1e-6:
+                tan.Normalize()
+            else:
+                tan = dir0
+            return pos, tan
+
+        # Lay out each segment center along the curve based on its relative length.
+        cursor = 0.0
+        for idx, seg_path in enumerate(state.segment_paths):
+            seg_len = seg_lengths[idx] if idx < len(seg_lengths) else state.params.segment_length
+            # Center of this segment along the rope (0..1).
+            mid_s = (cursor + 0.5 * seg_len) / rope_len
+            center, tangent = sample_pos_and_dir(mid_s)
+
+            prim = stage.GetPrimAtPath(seg_path)
+            if prim and prim.IsValid():
+                xf = UsdGeom.Xformable(prim)
+                xf.ClearXformOpOrder()
+                xf.AddTranslateOp().Set(Gf.Vec3f(center))
+                # Orient segment so its +X axis follows the curve tangent.
+                rot = Gf.Rotation(Gf.Vec3d(1.0, 0.0, 0.0), tangent).GetQuat()
+                qd = Gf.Quatd(rot.GetReal(), rot.GetImaginary())
+                qf = Gf.Quatf(float(qd.GetReal()), Gf.Vec3f(qd.GetImaginary()))
+                xf.AddOrientOp().Set(qf)
+                xf.AddScaleOp().Set(Gf.Vec3f(1.0, 1.0, 1.0))
+
+            cursor += seg_len
+
+        # Update spline points from new segment poses, but keep anchors as user-authored
+        # handles (do not overwrite them from segment endpoints here).
+        self._update_curve_points(state)
+
+        # Refresh endpoint cache for curve update throttling.
+        if stage and state.segment_paths:
+            p_first = self._segment_world_pos(stage, state.segment_paths[0])
+            p_last = self._segment_world_pos(stage, state.segment_paths[-1])
+            if p_first is not None and p_last is not None:
+                state._last_endpoints = (Gf.Vec3f(p_first), Gf.Vec3f(p_last))
+        state.dirty = False
+
+        # Update cached joint drive targets from the new pose so the edit UI stays in sync.
+        try:
+            inferred = self._infer_joint_targets_from_pose(stage, state.segment_paths, state.joint_paths)
+            for jp, axes in inferred.items():
+                state.joint_drive_targets[jp] = dict(axes)
+        except Exception as exc:
+            carb.log_warn(f\"[RopeBuilder] Failed to infer joint targets after fitting to anchors: {exc}\")
+
+        return rope_len, curve_len
+
     # ----------------------------------------------------------------------------------------------
     # Helpers
     # ----------------------------------------------------------------------------------------------
