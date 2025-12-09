@@ -269,14 +269,20 @@ class RopeBuilderController:
             carb.log_warn(f"[RopeBuilder] No joints found under {root_path}. Joint UI will be empty.")
 
         params, joint_limits, seg_lengths = self._infer_params_from_stage(stage, root_path, segment_paths, joint_paths)
-        # Seed joint drive targets from existing authored drive target positions, if present.
+        # Seed joint drive targets from existing authored drive target positions if present.
+        # If not authored (common in Isaac Sim 5.0), infer targets from the current pose so UI sliders
+        # match the "Local Offset" shown in the Joint Properties panel.
+        inferred_from_pose = self._infer_joint_targets_from_pose(stage, segment_paths, joint_paths)
+
         joint_targets: Dict[str, Dict[str, float]] = {}
         for jp in joint_paths:
             joint_targets[jp] = {}
             joint_prim = stage.GetPrimAtPath(jp)
             lims = joint_limits.get(jp, {})
+            inferred_axes = inferred_from_pose.get(jp, {})
+
             for axis in ROT_AXES:
-                target_val = 0.0
+                target_val = None
                 drv = UsdPhysics.DriveAPI.Get(joint_prim, axis)
                 if drv:
                     t_attr = drv.GetTargetPositionAttr()
@@ -284,7 +290,11 @@ class RopeBuilderController:
                         try:
                             target_val = float(t_attr.Get())
                         except Exception:
-                            target_val = 0.0
+                            target_val = None
+
+                if target_val is None:
+                    target_val = float(inferred_axes.get(axis, 0.0))
+
                 low, high = lims.get(axis, (-180.0, 180.0))
                 target_val = max(min(target_val, high), low)
                 joint_targets[jp][axis] = target_val
@@ -309,22 +319,31 @@ class RopeBuilderController:
             lr0 = lr0_attr.Get() if lr0_attr and lr0_attr.HasAuthoredValueOpinion() else Gf.Quatf(1.0)
             lr1 = lr1_attr.Get() if lr1_attr and lr1_attr.HasAuthoredValueOpinion() else Gf.Quatf(1.0)
 
-            def quat_to_euler_deg(q):
-                try:
-                    rot = Gf.Rotation(Gf.Quatd(float(q.GetReal()), Gf.Vec3d(q.GetImaginary())))
-                    # Returns XYZ degrees.
-                    return tuple(float(v) for v in rot.Decompose(Gf.Vec3d(1, 0, 0), Gf.Vec3d(0, 1, 0), Gf.Vec3d(0, 0, 1)))
-                except Exception:
-                    return (0.0, 0.0, 0.0)
-
             joint_local_offsets[jp] = {
                 "local_pos0": lp0,
                 "local_pos1": lp1,
                 "local_rot0_quat": lr0,
                 "local_rot1_quat": lr1,
-                "local_rot0_euler": quat_to_euler_deg(lr0),
-                "local_rot1_euler": quat_to_euler_deg(lr1),
+                "local_rot0_euler": self._quat_to_euler_xyz_deg(lr0),
+                "local_rot1_euler": self._quat_to_euler_xyz_deg(lr1),
+                "local_rot0_authored": bool(lr0_attr and lr0_attr.HasAuthoredValueOpinion()),
+                "local_rot1_authored": bool(lr1_attr and lr1_attr.HasAuthoredValueOpinion()),
             }
+
+        # If localRot0/1 are not authored, Isaac Sim still shows a derived "Local Offset".
+        # We compute an equivalent Euler offset from current pose for UI.
+        for idx, jp in enumerate(joint_paths):
+            off = joint_local_offsets.get(jp)
+            if not off:
+                continue
+            if (not off.get("local_rot0_authored", False)) and idx < len(segment_paths) - 1:
+                pose0 = self._segment_frame(stage, segment_paths[idx])
+                pose1 = self._segment_frame(stage, segment_paths[idx + 1])
+                if pose0 and pose1:
+                    qrel = pose0[1].GetInverse() * pose1[1]
+                    off["local_rot0_euler"] = self._quat_to_euler_xyz_deg(qrel)
+            if (not off.get("local_rot1_authored", False)):
+                off.setdefault("local_rot1_euler", (0.0, 0.0, 0.0))
 
         curve_path = f"{root_path}/curve"
         anchor_start = f"{root_path}/anchor_start"
@@ -1243,9 +1262,9 @@ class RopeBuilderController:
         )
         return params, limits, seg_lengths
 
-    def get_joint_local_offsets(self) -> List[Dict[str, Any]]:
-        """Return local offset data (as shown in Isaac Sim D6 Joint Properties) for active cable."""
-        state = self._get_state(require=False)
+    def get_joint_local_offsets(self, root_path: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Return local offset data (as shown in Isaac Sim D6 Joint Properties) for active or given cable."""
+        state = self._get_state(root_path, require=False)
         if not state:
             return []
         out: List[Dict[str, Any]] = []
@@ -1257,3 +1276,42 @@ class RopeBuilderController:
                 **offsets,
             })
         return out
+
+    def _infer_joint_targets_from_pose(
+        self, stage, segment_paths: List[str], joint_paths: List[str]
+    ) -> Dict[str, Dict[str, float]]:
+        """Infer rotX/Y/Z targets from current world orientations of neighboring segments."""
+        targets: Dict[str, Dict[str, float]] = {}
+        for idx, jp in enumerate(joint_paths):
+            rot_xyz = (0.0, 0.0, 0.0)
+            if idx < len(segment_paths) - 1:
+                pose0 = self._segment_frame(stage, segment_paths[idx])
+                pose1 = self._segment_frame(stage, segment_paths[idx + 1])
+                if pose0 and pose1:
+                    qrel = pose0[1].GetInverse() * pose1[1]
+                    rot_xyz = self._quat_to_euler_xyz_deg(qrel)
+
+            targets[jp] = {
+                "rotX": float(rot_xyz[0]),
+                "rotY": float(rot_xyz[1]),
+                "rotZ": float(rot_xyz[2]),
+            }
+        return targets
+
+    @staticmethod
+    def _quat_to_euler_xyz_deg(q) -> Tuple[float, float, float]:
+        """Convert a quaternion (Gf.Quatf/Quatd) to XYZ Euler angles in degrees."""
+        try:
+            # Normalize to Quatd for stability
+            if isinstance(q, Gf.Quatf):
+                qd = Gf.Quatd(float(q.GetReal()), Gf.Vec3d(q.GetImaginary()))
+            else:
+                qd = q
+            r = Gf.Rotation(qd)
+            x_axis = Gf.Vec3d(1.0, 0.0, 0.0)
+            y_axis = Gf.Vec3d(0.0, 1.0, 0.0)
+            z_axis = Gf.Vec3d(0.0, 0.0, 1.0)
+            rx, ry, rz = r.Decompose(x_axis, y_axis, z_axis)
+            return float(rx), float(ry), float(rz)
+        except Exception:
+            return 0.0, 0.0, 0.0
