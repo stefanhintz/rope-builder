@@ -351,17 +351,16 @@ class UIBuilder:
             if model and low <= 0.0 <= high:
                 model.set_value(0.0)
 
-    def _on_reset_joint_row(self, joint_index: int):
-        """Reset a single joint's rotX/rotY/rotZ to zero within limits."""
+    def _on_reset_joint_axis(self, joint_index: int, axis: str):
+        """Reset a single axis on one joint to zero within limits."""
         data = {info.get("index"): info for info in self._controller.get_joint_control_data()}
         limits = data.get(joint_index, {}).get("limits", {})
-        for axis in ROT_AXES:
-            low, high = limits.get(axis, (-180.0, 180.0))
-            if low <= 0.0 <= high:
-                clamped = self._controller.set_joint_drive_target(joint_index, axis, 0.0, apply_pose=True)
-                model = self._joint_slider_models.get((joint_index, axis))
-                if model and abs(model.as_float - clamped) > 1e-6:
-                    model.set_value(clamped)
+        low, high = limits.get(axis, (-180.0, 180.0))
+        if low <= 0.0 <= high:
+            clamped = self._controller.set_joint_drive_target(joint_index, axis, 0.0, apply_pose=True)
+            model = self._joint_slider_models.get((joint_index, axis))
+            if model and abs(model.as_float - clamped) > 1e-6:
+                model.set_value(clamped)
 
     def _on_toggle_visibility(self):
         if not self._controller.rope_exists():
@@ -529,16 +528,21 @@ class UIBuilder:
                                 )
                                 with ui.VStack(height=0, spacing=2):
                                     ui.Label(f"{axis}", width=24, style=get_style())
-                                    ui.FloatSlider(min=low, max=high, model=model, style=get_style(), height=0)
+                                    with ui.HStack(height=0, spacing=4):
+                                        ui.FloatSlider(min=low, max=high, model=model, style=get_style(), height=0)
+                                        ui.Button(
+                                            "",
+                                            width=18,
+                                            height=18,
+                                            clicked_fn=lambda i=idx, ax=axis: self._on_reset_joint_axis(i, ax),
+                                            tooltip=f"Reset {axis} to zero within limits",
+                                            style={
+                                                "background_color": 0xFF2196F3,
+                                                "border_radius": 3,
+                                                "border_color": 0xFF2196F3,
+                                            },
+                                        )
                                 self._joint_slider_models[(idx, axis)] = model
-                            ui.Button(
-                                "",
-                                width=18,
-                                height=18,
-                                clicked_fn=lambda i=idx: self._on_reset_joint_row(i),
-                                tooltip="Reset rotX/rotY/rotZ of this joint to zero (within limits)",
-                                style={"background_color": 0xFF1E88E5, "border_radius": 3},
-                            )
 
     def _clear_joint_controls(self):
         if not self._joint_frame:
