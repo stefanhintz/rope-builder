@@ -40,6 +40,10 @@ class _CableTreeModel(ui.AbstractItemModel):
         self._items = [_CableItem(p) for p in paths]
         self._item_changed(None)  # notify view
 
+    def get_item_value_model_count(self, item) -> int:
+        # One text column.
+        return 1
+
     def get_item_children(self, item):
         if item is None:
             return self._items
@@ -508,8 +512,10 @@ class UIBuilder:
             active = self._controller.active_cable_path()
             if paths and active in paths and self._active_tree_view:
                 idx = paths.index(active)
-                if 0 <= idx < len(paths) and hasattr(self._active_tree_view, "selection"):
-                    self._active_tree_view.selection = [idx]
+                if 0 <= idx < len(self._active_tree_model._items):
+                    item = self._active_tree_model._items[idx]
+                    if hasattr(self._active_tree_view, "selection"):
+                        self._active_tree_view.selection = [item]
         finally:
             self._syncing_active_selection = False
 
@@ -526,11 +532,13 @@ class UIBuilder:
         if not sel:
             return
 
-        idx = sel[0]
-        if idx < 0 or idx >= len(paths):
+        item = sel[0]
+        if not hasattr(item, "label"):
+            return
+        path = item.label
+        if path not in paths:
             return
 
-        path = paths[idx]
         if self._controller.set_active_cable(path):
             self._active_path_model.set_value(path)
             self._refresh_known_cables_label()
