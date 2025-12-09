@@ -280,7 +280,13 @@ class UIBuilder:
         self._refresh_active_tree()
         self._active_path_model.set_value(self._controller.active_cable_path() or "")
 
-        # Enable global actions as soon as we have any cables, even if none is "active" yet.
+        # Enable actions based on discovered cables.
+        active_exists = self._controller.rope_exists()
+        self._reset_joint_btn.enabled = active_exists
+        if self._fit_anchors_btn:
+            self._fit_anchors_btn.enabled = active_exists
+
+        # Global actions as soon as we have any cables, even if none is "active" yet.
         has_cables = bool(self._controller.list_cable_paths())
         if self._subscription_btn:
             self._subscription_btn.enabled = has_cables
@@ -609,8 +615,20 @@ class UIBuilder:
             return
 
         if self._controller.set_active_cable(path):
+            active_exists = self._controller.rope_exists()
+            self._delete_btn.enabled = True
+            self._reset_joint_btn.enabled = active_exists
+            if self._fit_anchors_btn:
+                self._fit_anchors_btn.enabled = active_exists
+            has_cables = bool(self._controller.list_cable_paths())
+            if self._subscription_btn:
+                self._subscription_btn.enabled = has_cables
+            if self._toggle_vis_btn:
+                self._toggle_vis_btn.enabled = has_cables
             self._active_path_model.set_value(path)
             self._refresh_known_cables_label()
+            self._refresh_subscription_btn()
+            self._refresh_visibility_btn()
             self._build_joint_controls()
             self._update_status(f"Active cable set to {path}.", warn=False)
 
