@@ -76,7 +76,6 @@ class UIBuilder:
         self._syncing_models = False
         self._segment_slider = None
         self._subscription_btn = None
-        self._reset_joint_btn = None
         self._joint_frame = None
         self._joint_slider_models = {}
         self._toggle_vis_btn = None
@@ -192,9 +191,6 @@ class UIBuilder:
                     self._toggle_vis_btn = ui.Button(
                         "Show collisions (all)", clicked_fn=self._on_toggle_visibility, enabled=False
                     )
-                    self._reset_joint_btn = ui.Button(
-                        "Reset joint targets", clicked_fn=self._on_reset_joints, enabled=False
-                    )
                     self._fit_anchors_btn = ui.Button(
                         "Fit rope to anchors", clicked_fn=self._on_fit_to_anchors, enabled=False
                     )
@@ -293,7 +289,6 @@ class UIBuilder:
 
         # Enable actions based on discovered cables.
         active_exists = self._controller.rope_exists()
-        self._reset_joint_btn.enabled = active_exists
         if self._fit_anchors_btn:
             self._fit_anchors_btn.enabled = active_exists
         if self._add_handle_btn:
@@ -366,7 +361,6 @@ class UIBuilder:
         self._refresh_known_cables_label()
         self._refresh_active_tree()
         self._delete_btn.enabled = True
-        self._reset_joint_btn.enabled = True
         if self._fit_anchors_btn:
             self._fit_anchors_btn.enabled = True
         if self._add_handle_btn:
@@ -389,7 +383,6 @@ class UIBuilder:
 
         self._controller.delete_rope(path)
         active_exists = self._controller.rope_exists()
-        self._reset_joint_btn.enabled = active_exists
         self._subscription_btn.enabled = active_exists
         self._toggle_vis_btn.enabled = active_exists
         if self._fit_anchors_btn:
@@ -418,7 +411,6 @@ class UIBuilder:
         self._refresh_known_cables_label()
         self._refresh_active_tree()
         self._delete_btn.enabled = True
-        self._reset_joint_btn.enabled = True
         if self._fit_anchors_btn:
             self._fit_anchors_btn.enabled = True
         if self._add_handle_btn:
@@ -441,7 +433,6 @@ class UIBuilder:
         self._refresh_known_cables_label()
         self._refresh_active_tree()
         self._delete_btn.enabled = True
-        self._reset_joint_btn.enabled = True
         if self._fit_anchors_btn:
             self._fit_anchors_btn.enabled = True
         if self._add_handle_btn:
@@ -476,15 +467,6 @@ class UIBuilder:
             self._update_status(str(exc), warn=True)
 
         self._refresh_subscription_btn()
-
-    def _on_reset_joints(self):
-        self._controller.reset_joint_drive_targets()
-        data = {info.get("index"): info for info in self._controller.get_joint_control_data()}
-        for (joint_idx, axis), model in self._joint_slider_models.items():
-            limits = data.get(joint_idx, {}).get("limits", {})
-            low, high = limits.get(axis, (-180.0, 180.0))
-            if model and low <= 0.0 <= high:
-                model.set_value(0.0)
 
     def _on_reset_joint_axis(self, joint_index: int, axis: str):
         """Reset a single axis on one joint to zero within limits."""
@@ -602,7 +584,6 @@ class UIBuilder:
             # Active-cable-only actions depend on an active cable.
             active_exists = self._controller.rope_exists()
             self._delete_btn.enabled = True
-            self._reset_joint_btn.enabled = active_exists
             if self._fit_anchors_btn:
                 self._fit_anchors_btn.enabled = active_exists
             if self._add_handle_btn:
@@ -675,7 +656,6 @@ class UIBuilder:
         if self._controller.set_active_cable(path):
             active_exists = self._controller.rope_exists()
             self._delete_btn.enabled = True
-            self._reset_joint_btn.enabled = active_exists
             if self._fit_anchors_btn:
                 self._fit_anchors_btn.enabled = active_exists
             if self._add_handle_btn:
