@@ -92,6 +92,8 @@ class CableState:
     plug_end_path: Optional[str] = None
     plug_joint_start: Optional[str] = None
     plug_joint_end: Optional[str] = None
+    plug_start_orient_offset: Optional[Gf.Quatd] = None
+    plug_end_orient_offset: Optional[Gf.Quatd] = None
     show_curve: bool = True
     update_subscription: Optional[Any] = None
 
@@ -345,6 +347,8 @@ class RopeBuilderController:
         # No automatic joint authoring; user-created joints are expected.
         state.plug_joint_start = None
         state.plug_joint_end = None
+        state.plug_start_orient_offset = None
+        state.plug_end_orient_offset = None
         self._update_anchors_and_plugs(state)
 
     def discover_plugs_from_joints(self) -> Tuple[Optional[str], Optional[str]]:
@@ -395,6 +399,8 @@ class RopeBuilderController:
 
         state.plug_start_path = found_start
         state.plug_end_path = found_end
+        state.plug_start_orient_offset = None
+        state.plug_end_orient_offset = None
         return found_start, found_end
 
     def showing_curve(self) -> bool:
@@ -741,6 +747,28 @@ class RopeBuilderController:
             return prim
         return UsdGeom.Xform.Define(stage, Sdf.Path(path)).GetPrim()
 
+    def _ensure_plug_orientation_offsets(
+        self,
+        stage,
+        state: CableState,
+        first_pose: Optional[Tuple[Gf.Vec3d, Gf.Quatd]],
+        last_pose: Optional[Tuple[Gf.Vec3d, Gf.Quatd]],
+    ):
+        """Cache the initial plug-to-anchor rotation offset so user-set plug rotation is preserved."""
+        if state.plug_start_path and state.plug_start_orient_offset is None and first_pose:
+            plug_pose = self._segment_frame(stage, state.plug_start_path)
+            if plug_pose:
+                anchor_rot = first_pose[1]
+                plug_rot = plug_pose[1]
+                state.plug_start_orient_offset = anchor_rot.GetInverse() * plug_rot
+
+        if state.plug_end_path and state.plug_end_orient_offset is None and last_pose:
+            plug_pose = self._segment_frame(stage, state.plug_end_path)
+            if plug_pose:
+                anchor_rot = last_pose[1]
+                plug_rot = plug_pose[1]
+                state.plug_end_orient_offset = anchor_rot.GetInverse() * plug_rot
+
     def _update_anchors_and_plugs(self, state: CableState):
         """Place start/end anchors at rope tips and optionally move attached plugs in edit mode."""
         stage = self._usd_context.get_stage()
@@ -761,11 +789,14 @@ class RopeBuilderController:
             tip = pos + dir_x * (seg_lengths[-1] * 0.5)
             self._set_world_transform(state.anchor_end, tip, rot)
 
+        # Capture plug orientation offsets once, so user-set rotation is preserved relative to anchors.
+        self._ensure_plug_orientation_offsets(stage, state, first_pose, last_pose)
+
         # Move plug prims with anchors in edit mode (position + orientation for posing).
         if state.plug_start_path and first_pose:
-            self._match_anchor_pose(stage, state.anchor_start, state.plug_start_path)
+            self._match_anchor_pose(stage, state.anchor_start, state.plug_start_path, state.plug_start_orient_offset)
         if state.plug_end_path and last_pose:
-            self._match_anchor_pose(stage, state.anchor_end, state.plug_end_path)
+            self._match_anchor_pose(stage, state.anchor_end, state.plug_end_path, state.plug_end_orient_offset)
 
     def _set_world_transform(self, path: str, pos: Gf.Vec3d, rot: Gf.Quatd):
         stage = self._usd_context.get_stage()
@@ -780,7 +811,7 @@ class RopeBuilderController:
         qf = Gf.Quatf(float(rot.GetReal()), Gf.Vec3f(rot.GetImaginary()))
         xf.AddOrientOp().Set(qf)
 
-    def _match_anchor_pose(self, stage, anchor_path: str, plug_path: str):
+    def _match_anchor_pose(self, stage, anchor_path: str, plug_path: str, rot_offset: Optional[Gf.Quatd]):
         """Drive plug position and orientation to match the anchor for posing."""
         anchor_prim = stage.GetPrimAtPath(anchor_path)
         plug_prim = stage.GetPrimAtPath(plug_path)
@@ -790,6 +821,8 @@ class RopeBuilderController:
         m = anchor_xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
         pos = m.ExtractTranslation()
         rot = m.ExtractRotation().GetQuat()
+        if rot_offset:
+            rot = rot * rot_offset
 
         plug_xf = UsdGeom.Xformable(plug_prim)
         translate_op = None
@@ -808,10 +841,11 @@ class RopeBuilderController:
 
         if not orient_op:
             orient_op = plug_xf.AddOrientOp(precision=UsdGeom.XformOp.PrecisionDouble)
-        if orient_op.GetPrecision() == UsdGeom.XformOp.PrecisionDouble:
-            orient_op.Set(rot)
-        else:
-            orient_op.Set(Gf.Quatf(float(rot.GetReal()), Gf.Vec3f(rot.GetImaginary())))
+        if rot_offset:
+            if orient_op.GetPrecision() == UsdGeom.XformOp.PrecisionDouble:
+                orient_op.Set(rot)
+            else:
+                orient_op.Set(Gf.Quatf(float(rot.GetReal()), Gf.Vec3f(rot.GetImaginary())))
 
     def _match_anchor_to_plug(self, stage, anchor_path: str, plug_path: str):
         anchor_prim = stage.GetPrimAtPath(anchor_path)
