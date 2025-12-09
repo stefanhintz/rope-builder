@@ -772,8 +772,8 @@ class RopeBuilderController:
         rot = m.ExtractRotation().GetQuat()
         plug_xf = UsdGeom.Xformable(plug_prim)
         plug_xf.ClearXformOpOrder()
-        plug_xf.AddTranslateOp().Set(Gf.Vec3f(pos))
-        plug_xf.AddOrientOp().Set(Gf.Quatf(float(rot.GetReal()), Gf.Vec3f(rot.GetImaginary())))
+        plug_xf.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionDouble).Set(Gf.Vec3d(pos))
+        plug_xf.AddOrientOp(precision=UsdGeom.XformOp.PrecisionDouble).Set(rot)
 
     def _apply_visibility_state(self, state: CableState):
         """Show either the spline or the collision capsules to declutter the view."""
