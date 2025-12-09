@@ -181,8 +181,9 @@ class UIBuilder:
                 self._delete_btn = ui.Button(
                     "Delete Cable", clicked_fn=self._on_delete_rope, enabled=self._controller.rope_exists()
                 )
+                # Global spline subscribe/unsubscribe for all cables.
                 self._subscription_btn = ui.Button(
-                    "Subscribe spline update", clicked_fn=self._on_toggle_subscription, enabled=False
+                    "Subscribe splines (all)", clicked_fn=self._on_sync_all_splines_button, enabled=False
                 )
                 self._reset_joint_btn = ui.Button(
                     "Reset joint targets", clicked_fn=self._on_reset_joints, enabled=False
