@@ -529,19 +529,12 @@ class UIBuilder:
                                 )
                                 with ui.VStack(height=0, spacing=2):
                                     ui.Label(f"{axis}", width=24, style=get_style())
-                                    with ui.HStack(spacing=4, height=Pixel(18), valign=Alignment.CENTER):
-                                        ui.FloatSlider(
-                                            min=low,
-                                            max=high,
-                                            model=model,
-                                            style=get_style(),
-                                            height=Pixel(18),
-                                            width=Fraction(1),   # let slider take remaining space
-                                        )
+                                    with ui.HStack(height=18, spacing=4):
+                                        ui.FloatSlider(min=low, max=high, model=model, style=get_style(), height=0)
                                         ui.Button(
                                             "",
-                                            width=Pixel(18),
-                                            height=Pixel(18),
+                                            width=18,
+                                            height=18,
                                             clicked_fn=lambda i=idx, ax=axis: self._on_reset_joint_axis(i, ax),
                                             tooltip=f"Reset {axis} to zero within limits",
                                             style={
@@ -552,7 +545,9 @@ class UIBuilder:
                                                     "border_radius": 3,
                                                     "padding": 0,
                                                     "margin": 0,
-                                                }
+                                                },
+                                                "Button:hovered": {"background_color": cl(0xFF42A5F5)},
+                                                "Button:pressed": {"background_color": cl(0xFF1E88E5)},
                                             },
                                         )
                                 self._joint_slider_models[(idx, axis)] = model
