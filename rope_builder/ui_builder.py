@@ -147,16 +147,15 @@ class UIBuilder:
 
                 with ui.HStack(height=0, spacing=8):
                     self._create_btn = ui.Button("Create Cable", clicked_fn=self._on_create_rope)
-                    self._delete_btn = ui.Button(
-                        "Delete Cable", clicked_fn=self._on_delete_rope, enabled=self._controller.rope_exists()
-                    )
 
         # ------------------------------------------------------------------
         # 2) Cable list / discovery
         # ------------------------------------------------------------------
         with CollapsableFrame("Cables", collapsed=False):
             with ui.VStack(style=get_style(), spacing=6, height=0):
-                ui.Button("Discover cables", clicked_fn=self._on_discover_cables_button)
+                with ui.HStack(height=0, spacing=8):
+                    ui.Button("Discover cables", clicked_fn=self._on_discover_cables_button)
+                    self._delete_btn = ui.Button("Delete Cable", clicked_fn=self._on_delete_rope, enabled=True)
                 self._active_tree_view = ui.TreeView(
                     self._active_tree_model,
                     root_visible=False,
@@ -353,9 +352,16 @@ class UIBuilder:
         self._update_status(f"Cable prims initialized at {prim_path}.", warn=False)
 
     def _on_delete_rope(self):
-        self._controller.delete_rope()
+        path = self._model_string(self._active_path_model, "")
+        if not path:
+            paths = self._controller.list_cable_paths()
+            if not paths:
+                self._update_status("No cables to delete.", warn=True)
+                return
+            path = paths[0]
+
+        self._controller.delete_rope(path)
         active_exists = self._controller.rope_exists()
-        self._delete_btn.enabled = active_exists
         self._reset_joint_btn.enabled = active_exists
         self._subscription_btn.enabled = active_exists
         self._toggle_vis_btn.enabled = active_exists
@@ -364,8 +370,11 @@ class UIBuilder:
         self._refresh_active_tree()
         self._refresh_subscription_btn()
         self._refresh_visibility_btn()
-        self._clear_joint_controls()
-        self._update_status("Cable deleted.", warn=False)
+        if active_exists:
+            self._build_joint_controls()
+        else:
+            self._clear_joint_controls()
+        self._update_status(f"Deleted cable at {path}.", warn=False)
 
     def _on_import_rope(self):
         path = self._model_string(self._import_path_model, "/World/cable")
@@ -484,7 +493,7 @@ class UIBuilder:
         if hasattr(self, "_delete_btn"):
             # Active-cable-only actions depend on an active cable.
             active_exists = self._controller.rope_exists()
-            self._delete_btn.enabled = active_exists
+            self._delete_btn.enabled = True
             self._reset_joint_btn.enabled = active_exists
 
             # Global actions depend on having any cables at all.

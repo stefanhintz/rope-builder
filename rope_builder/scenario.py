@@ -373,7 +373,8 @@ class RopeBuilderController:
 
     def delete_rope(self, root_path: Optional[str] = None):
         """Remove a cable from the stage and controller."""
-        state = self._get_state(root_path, require=False)
+        target_path = root_path or self._active_path or (self.list_cable_paths()[0] if self._cables else None)
+        state = self._get_state(target_path, require=False)
         if not state:
             return
 
@@ -381,6 +382,9 @@ class RopeBuilderController:
 
         stage = self._usd_context.get_stage()
         if stage:
+            # Preserve anchors by moving them under /World before deleting the cable root.
+            for anchor in (state.anchor_start, state.anchor_end):
+                self._move_anchor_to_world(stage, anchor)
             prim = stage.GetPrimAtPath(state.root_path)
             if prim and prim.IsValid():
                 stage.RemovePrim(state.root_path)
@@ -997,12 +1001,42 @@ class RopeBuilderController:
             img = UsdGeom.Imageable(col_prim)
             (img.MakeInvisible() if show_curve else img.MakeVisible())
 
+    def _move_anchor_to_world(self, stage, anchor_path: str):
+        """Move anchor prim out of the cable root to /World while keeping its name unique."""
+        if not anchor_path:
+            return
+        prim = stage.GetPrimAtPath(anchor_path)
+        if not prim or not prim.IsValid():
+            return
+
+        # If already under /World, nothing to do.
+        parent = prim.GetParent()
+        if parent and parent.GetPath() == Sdf.Path("/World"):
+            return
+
+        dest_path = self._make_unique_world_child(stage, Sdf.Path(anchor_path).name)
+        try:
+            stage.MovePrim(anchor_path, dest_path)
+            carb.log_info(f"[RopeBuilder] Moved anchor {anchor_path} to {dest_path}.")
+        except Exception as exc:
+            carb.log_warn(f"[RopeBuilder] Failed to move anchor {anchor_path}: {exc}")
+
     def _make_unique_root_path(self, stage, base_name: str) -> str:
         """Return a unique root path under /World avoiding collisions with existing cables."""
         base = re.sub(r"[^\w]", "_", base_name) or "cable"
         candidate = f"/World/{base}"
         suffix = 2
         while candidate in self._cables or stage.GetPrimAtPath(candidate).IsValid():
+            candidate = f"/World/{base}_{suffix:02d}"
+            suffix += 1
+        return candidate
+
+    def _make_unique_world_child(self, stage, base_name: str) -> str:
+        """Return a unique child path under /World for rehoming anchors."""
+        base = re.sub(r"[^\w]", "_", base_name) or "anchor"
+        candidate = f"/World/{base}"
+        suffix = 2
+        while stage.GetPrimAtPath(candidate).IsValid():
             candidate = f"/World/{base}_{suffix:02d}"
             suffix += 1
         return candidate
