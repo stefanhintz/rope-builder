@@ -535,6 +535,7 @@ class UIBuilder:
                                             "",
                                             width=18,
                                             height=18,
+                                            alignment=ui.Alignment.CENTER,
                                             clicked_fn=lambda i=idx, ax=axis: self._on_reset_joint_axis(i, ax),
                                             tooltip=f"Reset {axis} to zero within limits",
                                             style={
@@ -545,6 +546,10 @@ class UIBuilder:
                                                     "border_radius": 3,
                                                     "padding": 0,
                                                     "margin": 0,
+                                                    "min_width": 18,
+                                                    "max_width": 18,
+                                                    "min_height": 18,
+                                                    "max_height": 18,
                                                 },
                                                 "Button:hovered": {"background_color": cl(0xFF42A5F5)},
                                                 "Button:pressed": {"background_color": cl(0xFF1E88E5)},
