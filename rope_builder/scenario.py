@@ -340,40 +340,45 @@ class RopeBuilderController:
         state = self._get_state()
         stage = self._require_stage()
 
-        # Remove old joints
-        for jp in (state.plug_joint_start, state.plug_joint_end):
-            if jp:
-                prim = stage.GetPrimAtPath(jp)
-                if prim and prim.IsValid():
-                    stage.RemovePrim(jp)
-
-        state.plug_joint_start = None
-        state.plug_joint_end = None
         state.plug_start_path = start_plug
         state.plug_end_path = end_plug
 
+        # Align anchors (and plugs in edit mode) before building joints so joint frames match tips.
+        self._update_anchors_and_plugs(state)
+
         start_seg = state.segment_paths[0] if state.segment_paths else None
         end_seg = state.segment_paths[-1] if state.segment_paths else None
-        start_offset = -0.5 * state.segment_lengths[0] if state.segment_paths and state.segment_lengths else 0.0
-        end_offset = 0.5 * state.segment_lengths[-1] if state.segment_paths and state.segment_lengths else 0.0
+        anchor_start_pose = self._segment_frame(stage, state.anchor_start) if state.anchor_start else None
+        anchor_end_pose = self._segment_frame(stage, state.anchor_end) if state.anchor_end else None
 
-        def create_fixed(segment_path: Optional[str], plug_path: Optional[str], suffix: str, offset: float) -> Optional[str]:
-            if not plug_path or not segment_path:
-                return None
-            segment_prim = stage.GetPrimAtPath(segment_path)
-            plug_prim = stage.GetPrimAtPath(plug_path)
-            if not segment_prim or not segment_prim.IsValid() or not plug_prim or not plug_prim.IsValid():
-                return None
+        def deactivate_joint(joint_path: str):
+            prim = stage.GetPrimAtPath(joint_path)
+            if prim and prim.IsValid():
+                prim.SetActive(False)
+
+        def create_fixed(segment_path: Optional[str], plug_path: Optional[str], suffix: str, pivot_pose) -> Optional[str]:
             joint_path = f"{state.root_path}/plug_joint_{suffix}"
+            if not segment_path or not plug_path or not pivot_pose:
+                deactivate_joint(joint_path)
+                return None
+            seg_local = self._local_pose_from_world(stage, segment_path, pivot_pose[0], pivot_pose[1])
+            plug_local = self._local_pose_from_world(stage, plug_path, pivot_pose[0], pivot_pose[1])
+            if not seg_local or not plug_local:
+                deactivate_joint(joint_path)
+                return None
             fixed = UsdPhysics.FixedJoint.Define(stage, joint_path)
+            prim = fixed.GetPrim()
+            prim.SetActive(True)
             fixed.CreateBody0Rel().SetTargets([segment_path])
             fixed.CreateBody1Rel().SetTargets([plug_path])
-            fixed.CreateLocalPos0Attr(Gf.Vec3f(offset, 0.0, 0.0))
-            fixed.CreateLocalPos1Attr(Gf.Vec3f(0.0, 0.0, 0.0))
+            fixed.CreateLocalPos0Attr(seg_local[0])
+            fixed.CreateLocalRot0Attr(seg_local[1])
+            fixed.CreateLocalPos1Attr(plug_local[0])
+            fixed.CreateLocalRot1Attr(plug_local[1])
             return joint_path
 
-        state.plug_joint_start = create_fixed(start_seg, state.plug_start_path, "start", start_offset)
-        state.plug_joint_end = create_fixed(end_seg, state.plug_end_path, "end", end_offset)
+        state.plug_joint_start = create_fixed(start_seg, state.plug_start_path, "start", anchor_start_pose)
+        state.plug_joint_end = create_fixed(end_seg, state.plug_end_path, "end", anchor_end_pose)
         self._update_anchors_and_plugs(state)
 
     def showing_curve(self) -> bool:
@@ -655,6 +660,22 @@ class RopeBuilderController:
         pos = Gf.Vec3d(m.ExtractTranslation())
         rot = m.ExtractRotation().GetQuat()
         return pos, rot
+
+    def _local_pose_from_world(
+        self, stage, body_path: str, world_pos: Gf.Vec3d, world_rot: Gf.Quatd
+    ) -> Optional[Tuple[Gf.Vec3f, Gf.Quatf]]:
+        """Convert a world-space pose into local space of the given body for joint frames."""
+        prim = stage.GetPrimAtPath(body_path)
+        if not prim or not prim.IsValid():
+            return None
+        xf = UsdGeom.Xformable(prim)
+        m = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        inv = m.GetInverse()
+        local_pos = inv.Transform(world_pos)
+        body_rot = m.ExtractRotation().GetQuat()
+        body_q = Gf.Quatd(body_rot.GetReal(), body_rot.GetImaginary())
+        local_rot = body_q.GetInverse() * world_rot
+        return Gf.Vec3f(local_pos), Gf.Quatf(float(local_rot.GetReal()), Gf.Vec3f(local_rot.GetImaginary()))
 
     def _world_to_local_points(self, prim, world_pts: List[Gf.Vec3d]) -> List[Gf.Vec3f]:
         """Transform world-space points into the local space of prim."""
