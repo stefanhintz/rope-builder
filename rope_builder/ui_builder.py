@@ -192,6 +192,8 @@ class UIBuilder:
         self._param_models[param_key] = model
 
     def _on_discover_cables_button(self):
+        print("[RopeBuilder UI] Discover button clicked")
+        
         try:
             found = self._controller.discover_cables("/World")
         except Exception as exc:
