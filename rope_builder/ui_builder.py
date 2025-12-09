@@ -610,9 +610,14 @@ class UIBuilder:
     def _refresh_subscription_btn(self):
         if not self._subscription_btn:
             return
-        subscribed = self._controller.curve_subscription_active()
-        self._subscription_btn.text = "Unsubscribe spline update" if subscribed else "Subscribe spline update"
-        self._subscription_btn.enabled = self._controller.rope_exists()
+
+        has_cables = bool(self._controller.list_cable_paths())
+        subscribed_any = self._controller.any_curve_subscription_active()
+
+        self._subscription_btn.text = (
+            "Unsubscribe splines (all)" if subscribed_any else "Subscribe splines (all)"
+        )
+        self._subscription_btn.enabled = has_cables
 
     def _refresh_visibility_btn(self):
         if not self._toggle_vis_btn:
@@ -621,6 +626,22 @@ class UIBuilder:
         show_curve = self._controller.showing_curve_state()
         self._toggle_vis_btn.text = "Show collisions (all)" if show_curve else "Show spline (all)"
         self._toggle_vis_btn.enabled = has_cables
+
+    def _on_sync_all_splines_button(self):
+        """Toggle spline updates for all known cables."""
+        paths = self._controller.list_cable_paths()
+        if not paths:
+            self._update_status("No cables to sync. Discover or import first.", warn=True)
+            return
+
+        if self._controller.any_curve_subscription_active():
+            self._controller.stop_curve_updates_all()
+            self._update_status("Stopped spline updates for all cables.", warn=False)
+        else:
+            self._controller.start_curve_updates_all()
+            self._update_status("Spline updates active for all cables.", warn=False)
+
+        self._refresh_subscription_btn()
 
     def _auto_attach_plugs(self):
         # Auto-attach when paths are present and a cable exists.

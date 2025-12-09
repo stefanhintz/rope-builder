@@ -312,6 +312,29 @@ class RopeBuilderController:
     def validate_parameters(self) -> bool:
         return self._validate_params(self._params)
 
+    def any_curve_subscription_active(self) -> bool:
+        """True if at least one cable has an update subscription."""
+        for state in self._cables.values():
+            if state.update_subscription:
+                return True
+        return False
+
+    def start_curve_updates_all(self):
+        """Subscribe spline updates for all cables."""
+        for rp in self.list_cable_paths():
+            try:
+                self.start_curve_updates(rp)
+            except Exception as exc:
+                carb.log_warn(f"[RopeBuilder] Failed to start curve updates for {rp}: {exc}")
+
+    def stop_curve_updates_all(self):
+        """Unsubscribe spline updates for all cables."""
+        for rp in self.list_cable_paths():
+            try:
+                self.stop_curve_updates(rp)
+            except Exception as exc:
+                carb.log_warn(f"[RopeBuilder] Failed to stop curve updates for {rp}: {exc}")
+
     def start_curve_updates(self, root_path: Optional[str] = None):
         """Subscribe to per-frame updates for a cable spline."""
         state = self._get_state(root_path)
