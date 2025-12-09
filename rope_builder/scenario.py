@@ -249,14 +249,22 @@ class RopeBuilderController:
         if len(segment_paths) < 2:
             raise RuntimeError("Need at least 2 segments to import a cable.")
 
-        joint_regex = re.compile(r"joint_(\d+)")
-        joints = []
-        for child in root_prim.GetChildren():
-            m = joint_regex.search(child.GetName())
+        # Joints may not be direct children in some authored cables, so search under the root.
+        joint_regex = re.compile(r"joint_(\d+)$")
+        joints: List[Tuple[int, str]] = []
+        for prim in stage.Traverse():
+            if not prim or not prim.IsValid():
+                continue
+            p = prim.GetPath().pathString
+            if not p.startswith(root_path + "/"):
+                continue
+            m = joint_regex.search(prim.GetName())
             if m:
-                joints.append((int(m.group(1)), child.GetPath().pathString))
+                joints.append((int(m.group(1)), p))
         joints.sort(key=lambda x: x[0])
         joint_paths = [p for _, p in joints]
+        if not joint_paths:
+            carb.log_warn(f"[RopeBuilder] No joints found under {root_path}. Joint UI will be empty.")
 
         params, joint_limits, seg_lengths = self._infer_params_from_stage(stage, root_path, segment_paths, joint_paths)
         joint_targets = {jp: {axis: 0.0 for axis in ROT_AXES} for jp in joint_paths}
