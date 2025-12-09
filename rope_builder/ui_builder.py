@@ -19,11 +19,43 @@ from omni.ui import color as cl
 from isaacsim.gui.components.element_wrappers import CollapsableFrame
 from isaacsim.gui.components.ui_utils import get_style
 from omni.usd import StageEventType
-from omni.kit.widgets.custom import SimpleListView
-from omni.kit.widgets.custom.model import SimpleListModel
 
 from .scenario import ROT_AXES, RopeBuilderController
 
+class _CableItem(ui.AbstractItem):
+    def __init__(self, label: str):
+        super().__init__()
+        self.label = label
+        self.model = ui.SimpleStringModel(label)
+
+
+class _CableTreeModel(ui.AbstractItemModel):
+    """Single-column flat model for cable root paths."""
+
+    def __init__(self):
+        super().__init__()
+        self._items: list[_CableItem] = []
+
+    def set_paths(self, paths: list[str]):
+        self._items = [_CableItem(p) for p in paths]
+        self._item_changed(None)  # notify view
+
+    def get_item_children(self, item):
+        if item is None:
+            return self._items
+        return []
+
+    def get_item_value_model(self, item, column_id=0):
+        if item is None:
+            return None
+        return item.model
+
+    def get_item_value(self, item, column_id=0):
+        return item.label if item else ""
+
+    def set_item_value(self, item, value, column_id=0):
+        # read-only
+        return False
 
 class UIBuilder:
     """Creates the layout for the Rope Builder control window."""
@@ -46,9 +78,9 @@ class UIBuilder:
         self._cable_name_model = ui.SimpleStringModel("cable")
         self._import_path_model = ui.SimpleStringModel("/World/cable")
         self._active_path_model = ui.SimpleStringModel("")
-        # ListView for discovered/known cables
-        self._active_items_model = SimpleListModel()
-        self._active_list_widget = None
+        # TreeView for discovered/known cables
+        self._active_tree_model = _CableTreeModel()
+        self._active_tree_view = None
         self._syncing_active_selection = False
         self._known_cables_model = ui.SimpleStringModel("No cables yet.")
         self._plug_start_model = ui.SimpleStringModel("")
@@ -118,20 +150,17 @@ class UIBuilder:
                 with ui.HStack(height=0):
                     ui.Label("Discover cables", width=140, style=get_style())
                     ui.Button("Discover cables", clicked_fn=self._on_discover_cables_button)
-                # --- Dummy/test button for Actions section ---
-                with ui.HStack(height=0):
-                    ui.Label("Test list", width=140, style=get_style())
-                    ui.Button("Populate dummy", clicked_fn=self._on_populate_dummy_list)
                 with ui.HStack(height=0):
                     ui.Label("Active cable", width=140, style=get_style())
-                    with ui.VStack(height=0, spacing=2):
-                        self._active_list_widget = SimpleListView(
-                            model=self._active_items_model,
-                            column_widths=[ui.Length(280)],
+                    with ui.VStack(height=0, spacing=4):
+                        self._active_tree_view = ui.TreeView(
+                            self._active_tree_model,
+                            root_visible=False,
                             header_visible=False,
-                            multi_selection=False,
-                            height=100,
-                            selection_changed_fn=self._on_active_list_changed,
+                            columns_resizable=False,
+                            column_widths=[ui.Length(280)],
+                            height=120,
+                            selection_changed_fn=self._on_active_tree_changed,
                         )
                         ui.StringField(model=self._active_path_model)
                     ui.Button("Set active", clicked_fn=self._on_set_active_cable)
@@ -225,49 +254,8 @@ class UIBuilder:
             self._update_status("No cables discovered.", warn=True)
 
         self._refresh_known_cables_label()
-        self._refresh_active_list()
+        self._refresh_active_tree()
         self._active_path_model.set_value(self._controller.active_cable_path() or "")
-
-    def _on_populate_dummy_list(self):
-        """Populate the ListView with dummy data to verify ListView wiring."""
-        dummy_paths = ["/World/dummy_cable_A", "/World/dummy_cable_B", "/World/dummy_cable_C"]
-        rows = [[p] for p in dummy_paths]
-
-        self._syncing_active_selection = True
-        try:
-            # Clear selection before changing contents.
-            if hasattr(self._active_items_model, "clear_selection"):
-                try:
-                    self._active_items_model.clear_selection()
-                except Exception:
-                    pass
-            if self._active_list_widget and hasattr(self._active_list_widget, "selection"):
-                try:
-                    self._active_list_widget.selection = []
-                except Exception:
-                    pass
-
-            if hasattr(self._active_items_model, "set_items"):
-                self._active_items_model.set_items(rows)
-            else:
-                if hasattr(self._active_items_model, "clear"):
-                    self._active_items_model.clear()
-                for r in rows:
-                    if hasattr(self._active_items_model, "append_item"):
-                        self._active_items_model.append_item(r)
-
-            if self._active_list_widget and hasattr(self._active_list_widget, "enabled"):
-                self._active_list_widget.enabled = True
-
-            # Select first item safely.
-            if self._active_list_widget and hasattr(self._active_list_widget, "selection"):
-                self._active_list_widget.selection = [0]
-        finally:
-            self._syncing_active_selection = False
-
-        # Update text + status without touching controller.
-        self._active_path_model.set_value(dummy_paths[0])
-        self._update_status("Dummy list populated.", warn=False)
 
     def _on_param_change(self, key: str, value):
         if self._syncing_models:
@@ -305,7 +293,7 @@ class UIBuilder:
 
         self._active_path_model.set_value(prim_path)
         self._refresh_known_cables_label()
-        self._refresh_active_list()
+        self._refresh_active_tree()
         self._delete_btn.enabled = True
         self._reset_joint_btn.enabled = True
         self._subscription_btn.enabled = True
@@ -325,7 +313,7 @@ class UIBuilder:
         self._toggle_vis_btn.enabled = active_exists
         self._active_path_model.set_value(self._controller.active_cable_path() or "")
         self._refresh_known_cables_label()
-        self._refresh_active_list()
+        self._refresh_active_tree()
         self._refresh_subscription_btn()
         self._refresh_visibility_btn()
         self._clear_joint_controls()
@@ -340,7 +328,7 @@ class UIBuilder:
             return
         self._active_path_model.set_value(prim_path)
         self._refresh_known_cables_label()
-        self._refresh_active_list()
+        self._refresh_active_tree()
         self._delete_btn.enabled = True
         self._reset_joint_btn.enabled = True
         self._subscription_btn.enabled = True
@@ -360,7 +348,7 @@ class UIBuilder:
             self._update_status(f"No known cable at {path}.", warn=True)
             return
         self._refresh_known_cables_label()
-        self._refresh_active_list()
+        self._refresh_active_tree()
         self._delete_btn.enabled = True
         self._reset_joint_btn.enabled = True
         self._subscription_btn.enabled = True
@@ -492,67 +480,49 @@ class UIBuilder:
 
         self._active_path_model.set_value(self._controller.active_cable_path() or "")
         self._refresh_known_cables_label()
-        self._refresh_active_list()
+        self._refresh_active_tree()
         self._refresh_segment_slider_limit(clamp_value=True)
         self._refresh_subscription_btn()
         self._refresh_visibility_btn()
         self._build_joint_controls()
         self._update_status("Ready to create a cable.", warn=False)
 
-    def _refresh_active_list(self):
-        """Populate the list view with known cable root paths and sync selection."""
+    def _refresh_active_tree(self):
+        """Populate the TreeView with known cable paths and sync selection."""
         paths = self._controller.list_cable_paths()
-        items = paths if paths else ["(no cables)"]
-        rows = [[p] for p in items]
+        self._active_tree_model.set_paths(paths)
 
+        # Enable/disable view.
+        if self._active_tree_view and hasattr(self._active_tree_view, "enabled"):
+            self._active_tree_view.enabled = bool(paths)
+
+        # Clear selection before setting a new one.
         self._syncing_active_selection = True
         try:
-            # --- Clear selection BEFORE changing model contents to avoid out-of-range errors ---
-            if hasattr(self._active_items_model, "clear_selection"):
+            if self._active_tree_view and hasattr(self._active_tree_view, "selection"):
                 try:
-                    self._active_items_model.clear_selection()
-                except Exception:
-                    pass
-            if self._active_list_widget and hasattr(self._active_list_widget, "selection"):
-                try:
-                    self._active_list_widget.selection = []
+                    self._active_tree_view.selection = []
                 except Exception:
                     pass
 
-            # Update model contents across Kit versions.
-            if hasattr(self._active_items_model, "set_items"):
-                self._active_items_model.set_items(rows)
-            else:
-                if hasattr(self._active_items_model, "clear"):
-                    self._active_items_model.clear()
-                for r in rows:
-                    if hasattr(self._active_items_model, "append_item"):
-                        self._active_items_model.append_item(r)
-
-            # Enable/disable list depending on whether we have real cables.
-            if self._active_list_widget and hasattr(self._active_list_widget, "enabled"):
-                self._active_list_widget.enabled = bool(paths)
-
-            # Apply a safe selection ONLY if we have real paths.
-            if paths and self._active_list_widget and hasattr(self._active_list_widget, "selection"):
-                active = self._controller.active_cable_path()
-                if active in paths:
-                    idx = paths.index(active)
-                    if 0 <= idx < len(items):
-                        self._active_list_widget.selection = [idx]
+            active = self._controller.active_cable_path()
+            if paths and active in paths and self._active_tree_view:
+                idx = paths.index(active)
+                if 0 <= idx < len(paths) and hasattr(self._active_tree_view, "selection"):
+                    self._active_tree_view.selection = [idx]
         finally:
             self._syncing_active_selection = False
 
-    def _on_active_list_changed(self, _model=None, _item=None):
-        """Handle user selection in the active cable list."""
+    def _on_active_tree_changed(self, _model=None, _item=None):
+        """Handle user selection in the active cable TreeView."""
         if self._syncing_active_selection:
             return
 
         paths = self._controller.list_cable_paths()
-        if not paths or not self._active_list_widget:
+        if not paths or not self._active_tree_view:
             return
 
-        sel = self._active_list_widget.selection if hasattr(self._active_list_widget, "selection") else []
+        sel = self._active_tree_view.selection if hasattr(self._active_tree_view, "selection") else []
         if not sel:
             return
 
