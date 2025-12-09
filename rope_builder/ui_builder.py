@@ -498,15 +498,35 @@ class UIBuilder:
         # re-seed controller targets from local offsets (which would re-pose).
         self._build_joint_controls(seed_from_offsets=False)
 
+        # First, report any joint limit violations based on the fitted pose.
+        try:
+            num_viol, max_over = self._controller.get_joint_limit_violations()
+        except Exception:
+            num_viol, max_over = 0, 0.0
+
         mismatch = abs(path_len - rope_len)
-        if mismatch > 1e-3:
-            msg = (
-                f"Anchor path length ({path_len:.3f} m) differs from rope length "
-                f"({rope_len:.3f} m). Pose approximated; segment limits are ignored."
+
+        messages = []
+        warn = False
+
+        if num_viol > 0:
+            messages.append(
+                f"{num_viol} joint axes exceed limits (max violation {max_over:.1f} deg)."
             )
-            self._update_status(msg, warn=True)
-        else:
-            self._update_status("Rope pose fitted between anchors.", warn=False)
+            warn = True
+
+        if mismatch > 1e-3:
+            messages.append(
+                f"Anchor path length ({path_len:.3f} m) differs from rope length "
+                f"({rope_len:.3f} m). Pose approximated; segment limits may be exceeded."
+            )
+            warn = True
+
+        if not messages:
+            messages.append("Rope pose fitted between anchors.")
+
+        # Show limit-related warning first in the status, when present.
+        self._update_status(" ".join(messages), warn=warn)
 
     def _on_toggle_visibility(self):
         paths = self._controller.list_cable_paths()

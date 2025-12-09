@@ -564,6 +564,32 @@ class RopeBuilderController:
                 if low <= 0.0 <= high:
                     self.set_joint_drive_target(idx, axis, 0.0, apply_pose=True)
 
+    def get_joint_limit_violations(self, root_path: Optional[str] = None) -> Tuple[int, float]:
+        """Return (num_axes_violating_limits, max_violation_deg) for the given or active cable."""
+        state = self._get_state(root_path, require=False)
+        if not state:
+            return 0, 0.0
+
+        count = 0
+        max_over = 0.0
+        for joint_path in state.joint_paths:
+            limits = state.joint_limits.get(joint_path, {})
+            targets = state.joint_drive_targets.get(joint_path, {})
+            for axis in ROT_AXES:
+                val = float(targets.get(axis, 0.0))
+                low, high = limits.get(axis, (-180.0, 180.0))
+                if val < low:
+                    over = float(low - val)
+                elif val > high:
+                    over = float(val - high)
+                else:
+                    over = 0.0
+                if over > 0.0:
+                    count += 1
+                    if over > max_over:
+                        max_over = over
+        return count, max_over
+
     def fit_rope_to_anchors(self, root_path: Optional[str] = None) -> Optional[Tuple[float, float]]:
         """Repose the rope along a geometric curve between anchors in edit mode.
 
