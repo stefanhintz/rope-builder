@@ -820,11 +820,22 @@ class RopeBuilderController:
 
         # Lay out each segment center along the curve based on its relative length.
         cursor = 0.0
+        last_index = len(state.segment_paths) - 1
         for idx, seg_path in enumerate(state.segment_paths):
             seg_len = seg_lengths[idx] if idx < len(seg_lengths) else state.params.segment_length
-            # Center of this segment along the rope (0..1).
-            mid_s = (cursor + 0.5 * seg_len) / rope_len
-            center, tangent = sample_pos_and_dir(mid_s)
+
+            # End segments: force exact alignment with anchor transforms so plugs
+            # placed under anchors match the capsule orientation.
+            if idx == 0:
+                center = p0 + dir0 * (seg_len * 0.5)
+                tangent = dir0
+            elif idx == last_index:
+                center = p1 - dir1 * (seg_len * 0.5)
+                tangent = dir1
+            else:
+                # Interior segments follow the smooth sampled curve.
+                mid_s = (cursor + 0.5 * seg_len) / rope_len
+                center, tangent = sample_pos_and_dir(mid_s)
 
             prim = stage.GetPrimAtPath(seg_path)
             if prim and prim.IsValid():
