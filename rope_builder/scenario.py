@@ -91,6 +91,7 @@ class CableState:
     joint_local_offsets: Dict[str, Dict[str, Any]]
     anchor_start: str
     anchor_end: str
+    anchors_follow_rope: bool = True
     show_curve: bool = True
     update_subscription: Optional[Any] = None
     # Performance helpers
@@ -574,6 +575,13 @@ class RopeBuilderController:
         stage = self._usd_context.get_stage()
         if not state or not stage or not state.segment_paths:
             return None
+
+        # Switch to anchor-driven mode: anchors become user handles and stop
+        # being overwritten from rope tips.
+        try:
+            state.anchors_follow_rope = False
+        except Exception:
+            pass
 
         # Anchor prims are used as authoring handles: read their current world-space
         # frames and build a smooth curve between them.
@@ -1122,6 +1130,10 @@ class RopeBuilderController:
 
     def _update_anchors(self, state: CableState):
         """Place start/end anchors at rope tips."""
+        # Allow anchors to act as user-controlled handles when requested.
+        if hasattr(state, "anchors_follow_rope") and not state.anchors_follow_rope:
+            return
+
         stage = self._usd_context.get_stage()
         if not stage or not state.segment_paths:
             return
