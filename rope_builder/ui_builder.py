@@ -110,6 +110,9 @@ class UIBuilder:
                     ui.StringField(model=self._import_path_model)
                     ui.Button("Import cable", clicked_fn=self._on_import_rope)
                 with ui.HStack(height=0):
+                    ui.Label("Discover cables", width=140, style=get_style())
+                    ui.Button("Discover cables", clicked_fn=self._on_discover_cables_button)
+                with ui.HStack(height=0):
                     ui.Label("Active cable", width=140, style=get_style())
                     ui.StringField(model=self._active_path_model)
                     ui.Button("Set active", clicked_fn=self._on_set_active_cable)
@@ -187,6 +190,21 @@ class UIBuilder:
             self._segment_slider = ui.IntSlider(model=model, min=min_value, max=self._segment_max_limit())
 
         self._param_models[param_key] = model
+
+    def _on_discover_cables_button(self):
+        try:
+            found = self._controller.discover_cables("/World")
+        except Exception as exc:
+            self._update_status(str(exc), warn=True)
+            return
+
+        if found:
+            self._update_status(f"Discovered: {', '.join(found)}", warn=False)
+        else:
+            self._update_status("No cables discovered.", warn=True)
+
+        self._refresh_known_cables_label()
+        self._active_path_model.set_value(self._controller.active_cable_path() or "")
 
     def _on_param_change(self, key: str, value):
         if self._syncing_models:
