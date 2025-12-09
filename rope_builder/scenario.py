@@ -761,11 +761,11 @@ class RopeBuilderController:
             tip = pos + dir_x * (seg_lengths[-1] * 0.5)
             self._set_world_transform(state.anchor_end, tip, rot)
 
-        # Move plug prims with anchors in edit mode (position only; user controls orientation).
+        # Move plug prims with anchors in edit mode (position + orientation for posing).
         if state.plug_start_path and first_pose:
-            self._match_anchor_translation(stage, state.anchor_start, state.plug_start_path)
+            self._match_anchor_pose(stage, state.anchor_start, state.plug_start_path)
         if state.plug_end_path and last_pose:
-            self._match_anchor_translation(stage, state.anchor_end, state.plug_end_path)
+            self._match_anchor_pose(stage, state.anchor_end, state.plug_end_path)
 
     def _set_world_transform(self, path: str, pos: Gf.Vec3d, rot: Gf.Quatd):
         stage = self._usd_context.get_stage()
@@ -780,8 +780,8 @@ class RopeBuilderController:
         qf = Gf.Quatf(float(rot.GetReal()), Gf.Vec3f(rot.GetImaginary()))
         xf.AddOrientOp().Set(qf)
 
-    def _match_anchor_translation(self, stage, anchor_path: str, plug_path: str):
-        """Drive plug position to anchor (do not touch orientation so user can set it manually)."""
+    def _match_anchor_pose(self, stage, anchor_path: str, plug_path: str):
+        """Drive plug position and orientation to match the anchor for posing."""
         anchor_prim = stage.GetPrimAtPath(anchor_path)
         plug_prim = stage.GetPrimAtPath(plug_path)
         if not anchor_prim or not anchor_prim.IsValid() or not plug_prim or not plug_prim.IsValid():
@@ -789,17 +789,29 @@ class RopeBuilderController:
         anchor_xf = UsdGeom.Xformable(anchor_prim)
         m = anchor_xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
         pos = m.ExtractTranslation()
+        rot = m.ExtractRotation().GetQuat()
 
         plug_xf = UsdGeom.Xformable(plug_prim)
-        # Try to reuse an existing translate op; otherwise create one.
         translate_op = None
+        orient_op = None
         for op in plug_xf.GetOrderedXformOps():
-            if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+            if op.GetOpType() == UsdGeom.XformOp.TypeTranslate and translate_op is None:
                 translate_op = op
+            if op.GetOpType() == UsdGeom.XformOp.TypeOrient and orient_op is None:
+                orient_op = op
+            if translate_op and orient_op:
                 break
+
         if not translate_op:
             translate_op = plug_xf.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionDouble)
-        translate_op.Set(Gf.Vec3d(pos))
+        translate_op.Set(Gf.Vec3d(pos) if translate_op.GetPrecision() == UsdGeom.XformOp.PrecisionDouble else Gf.Vec3f(pos))
+
+        if not orient_op:
+            orient_op = plug_xf.AddOrientOp(precision=UsdGeom.XformOp.PrecisionDouble)
+        if orient_op.GetPrecision() == UsdGeom.XformOp.PrecisionDouble:
+            orient_op.Set(rot)
+        else:
+            orient_op.Set(Gf.Quatf(float(rot.GetReal()), Gf.Vec3f(rot.GetImaginary())))
 
     def _match_anchor_to_plug(self, stage, anchor_path: str, plug_path: str):
         anchor_prim = stage.GetPrimAtPath(anchor_path)
