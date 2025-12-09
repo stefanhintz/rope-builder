@@ -80,7 +80,6 @@ class UIBuilder:
         self._joint_slider_models = {}
         self._toggle_vis_btn = None
         self._cable_name_model = ui.SimpleStringModel("cable")
-        self._import_path_model = ui.SimpleStringModel("/World/cable")
         self._active_path_model = ui.SimpleStringModel("")
         # TreeView for discovered/known cables
         self._active_tree_model = _CableTreeModel()
@@ -119,16 +118,20 @@ class UIBuilder:
         self._param_models = {}
         self._param_constraints = {}
 
-        with CollapsableFrame("Cable Parameters", collapsed=False):
+        # ------------------------------------------------------------------
+        # 1) Cable creation / authoring controls
+        # ------------------------------------------------------------------
+        with CollapsableFrame("Cable Creation", collapsed=False):
             with ui.VStack(style=get_style(), spacing=8, height=0):
+                ui.Label("Cable Parameters", style=get_style())
                 self._build_float_field("Length (m)", "length", min_value=0.1, step=0.05)
                 self._build_float_field("Radius (m)", "radius", min_value=0.001, step=0.001)
                 self._build_float_field("Spline extend (m)", "curve_extension", min_value=0.0, step=0.005)
                 self._build_segment_slider("Segments", "segment_count", min_value=2)
                 self._build_float_field("Total Mass (kg)", "mass", min_value=0.01, step=0.05)
 
-        with CollapsableFrame("Joint Limits (degrees)", collapsed=False):
-            with ui.VStack(style=get_style(), spacing=8, height=0):
+                ui.Separator(height=6)
+                ui.Label("Joint Limits (degrees)", style=get_style())
                 self._build_float_field("rotX low", "rot_x_low", min_value=-180.0, step=1.0)
                 self._build_float_field("rotX high", "rot_x_high", min_value=-180.0, step=1.0)
                 self._build_float_field("rotY low", "rot_y_low", min_value=-180.0, step=1.0)
@@ -136,39 +139,48 @@ class UIBuilder:
                 self._build_float_field("rotZ low", "rot_z_low", min_value=-180.0, step=1.0)
                 self._build_float_field("rotZ high", "rot_z_high", min_value=-180.0, step=1.0)
 
-        with CollapsableFrame("Drive Settings", collapsed=False):
-            with ui.VStack(style=get_style(), spacing=8, height=0):
+                ui.Separator(height=6)
+                ui.Label("Drive Settings", style=get_style())
                 self._build_float_field("Stiffness", "drive_stiffness", min_value=0.0, step=10.0)
                 self._build_float_field("Damping", "drive_damping", min_value=0.0, step=1.0)
                 self._build_float_field("Max Force", "drive_max_force", min_value=0.0, step=10.0)
 
-        with CollapsableFrame("Actions", collapsed=False):
-            with ui.VStack(style=get_style(), spacing=8, height=0):
+                ui.Separator(height=6)
                 with ui.HStack(height=0):
                     ui.Label("Cable name", width=140, style=get_style())
                     ui.StringField(model=self._cable_name_model)
-                with ui.HStack(height=0):
-                    ui.Label("Import root path", width=140, style=get_style())
-                    ui.StringField(model=self._import_path_model)
-                    ui.Button("Import cable", clicked_fn=self._on_import_rope)
-                with ui.HStack(height=0):
-                    ui.Label("Discover cables", width=140, style=get_style())
-                    ui.Button("Discover cables", clicked_fn=self._on_discover_cables_button)
-                with ui.HStack(height=0):
-                    ui.Label("Active cable", width=140, style=get_style())
-                    with ui.VStack(height=0, spacing=4):
-                        self._active_tree_view = ui.TreeView(
-                            self._active_tree_model,
-                            root_visible=False,
-                            header_visible=False,
-                            columns_resizable=False,
-                            column_widths=[ui.Length(280)],
-                            height=120,
-                            selection_changed_fn=self._on_active_tree_changed,
-                        )
-                        ui.StringField(model=self._active_path_model)
-                    ui.Button("Set active", clicked_fn=self._on_set_active_cable)
+
+                with ui.HStack(height=0, spacing=8):
+                    self._create_btn = ui.Button("Create Cable", clicked_fn=self._on_create_rope)
+                    self._delete_btn = ui.Button(
+                        "Delete Cable", clicked_fn=self._on_delete_rope, enabled=self._controller.rope_exists()
+                    )
+
+        # ------------------------------------------------------------------
+        # 2) Cable list / discovery
+        # ------------------------------------------------------------------
+        with CollapsableFrame("Cables", collapsed=False):
+            with ui.VStack(style=get_style(), spacing=6, height=0):
+                ui.Button("Discover cables", clicked_fn=self._on_discover_cables_button)
+                self._active_tree_view = ui.TreeView(
+                    self._active_tree_model,
+                    root_visible=False,
+                    header_visible=False,
+                    columns_resizable=False,
+                    column_widths=[ui.Length(280)],
+                    height=140,
+                    selection_changed_fn=self._on_active_tree_changed,
+                )
                 ui.Label("", word_wrap=True, model=self._known_cables_model)
+
+        # ------------------------------------------------------------------
+        # 3) Active cable controls (plugs + joint drive targets)
+        # ------------------------------------------------------------------
+        with CollapsableFrame("Active Cable Controls", collapsed=False):
+            with ui.VStack(style=get_style(), spacing=8, height=0):
+                ui.Label("Active cable", style=get_style())
+                ui.StringField(model=self._active_path_model)
+
                 with ui.HStack(height=0):
                     ui.Label("Plug start path", width=140, style=get_style())
                     ui.StringField(model=self._plug_start_model)
@@ -177,27 +189,27 @@ class UIBuilder:
                     ui.StringField(model=self._plug_end_model)
                     ui.Button("Attach plugs", clicked_fn=self._on_attach_plugs)
                     ui.Button("Discover plugs", clicked_fn=self._on_discover_plugs)
-                self._create_btn = ui.Button("Create Cable", clicked_fn=self._on_create_rope)
-                self._delete_btn = ui.Button(
-                    "Delete Cable", clicked_fn=self._on_delete_rope, enabled=self._controller.rope_exists()
-                )
-                # Global spline subscribe/unsubscribe for all cables.
-                self._subscription_btn = ui.Button(
-                    "Subscribe splines (all)", clicked_fn=self._on_sync_all_splines_button, enabled=False
-                )
-                self._reset_joint_btn = ui.Button(
-                    "Reset joint targets", clicked_fn=self._on_reset_joints, enabled=False
-                )
-                self._toggle_vis_btn = ui.Button(
-                    "Show collisions", clicked_fn=self._on_toggle_visibility, enabled=False
-                )
+
+                with ui.HStack(height=0, spacing=8):
+                    # Global spline subscribe/unsubscribe for all cables.
+                    self._subscription_btn = ui.Button(
+                        "Subscribe splines (all)", clicked_fn=self._on_sync_all_splines_button, enabled=False
+                    )
+                    self._toggle_vis_btn = ui.Button(
+                        "Show collisions (all)", clicked_fn=self._on_toggle_visibility, enabled=False
+                    )
+                    self._reset_joint_btn = ui.Button(
+                        "Reset joint targets", clicked_fn=self._on_reset_joints, enabled=False
+                    )
+
+                ui.Label("Joint drive targets", style=get_style())
+                self._joint_frame = ui.Frame()
+                with self._joint_frame:
+                    ui.Label("Select or create a cable to edit joint drive targets.", style=get_style())
+
+                ui.Separator(height=6)
                 ui.Label("Status:", style=get_style())
                 ui.Label("", word_wrap=True, model=self._status_model)
-
-        with CollapsableFrame("Joint Controls", collapsed=False):
-            self._joint_frame = ui.Frame()
-            with self._joint_frame:
-                ui.Label("Create a cable to edit joint drive targets.", style=get_style())
 
         self._reset_ui()
 
