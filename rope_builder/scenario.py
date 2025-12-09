@@ -267,7 +267,25 @@ class RopeBuilderController:
             carb.log_warn(f"[RopeBuilder] No joints found under {root_path}. Joint UI will be empty.")
 
         params, joint_limits, seg_lengths = self._infer_params_from_stage(stage, root_path, segment_paths, joint_paths)
-        joint_targets = {jp: {axis: 0.0 for axis in ROT_AXES} for jp in joint_paths}
+        # Seed joint drive targets from existing authored drive target positions, if present.
+        joint_targets: Dict[str, Dict[str, float]] = {}
+        for jp in joint_paths:
+            joint_targets[jp] = {}
+            joint_prim = stage.GetPrimAtPath(jp)
+            lims = joint_limits.get(jp, {})
+            for axis in ROT_AXES:
+                target_val = 0.0
+                drv = UsdPhysics.DriveAPI.Get(joint_prim, axis)
+                if drv:
+                    t_attr = drv.GetTargetPositionAttr()
+                    if t_attr and t_attr.HasAuthoredValueOpinion():
+                        try:
+                            target_val = float(t_attr.Get())
+                        except Exception:
+                            target_val = 0.0
+                low, high = lims.get(axis, (-180.0, 180.0))
+                target_val = max(min(target_val, high), low)
+                joint_targets[jp][axis] = target_val
 
         curve_path = f"{root_path}/curve"
         anchor_start = f"{root_path}/anchor_start"
