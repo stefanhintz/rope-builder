@@ -96,6 +96,10 @@ class CableState:
     plug_end_orient_offset: Optional[Gf.Quatd] = None
     show_curve: bool = True
     update_subscription: Optional[Any] = None
+     # Performance helpers
+    dirty: bool = True
+    _accum_dt: float = 0.0
+    _last_endpoints: Optional[Tuple[Gf.Vec3f, Gf.Vec3f]] = None
 
 
 DEFAULT_PARAMS = RopeParameters()
@@ -200,6 +204,7 @@ class RopeBuilderController:
             anchor_end=anchor_end,
         )
         self._cables[root_path] = state
+        state.dirty = True
         self._active_path = root_path
 
         self._ensure_curve_prim(stage, state)
@@ -272,6 +277,7 @@ class RopeBuilderController:
             anchor_end=anchor_end,
         )
         self._cables[root_path] = state
+        state.dirty = True
         self._active_path = root_path
 
         self._ensure_curve_prim(stage, state)
@@ -349,6 +355,7 @@ class RopeBuilderController:
         state.update_subscription = stream.create_subscription_to_pop(
             lambda dt, rp=state.root_path: self._on_curve_update(rp, dt)
         )
+        state.dirty = True
         self._update_curve_points(state)
         carb.log_info(f"[RopeBuilder] Subscribed spline updates for {state.root_path}.")
 
@@ -390,6 +397,7 @@ class RopeBuilderController:
             if not state:
                 continue
             state.show_curve = new_show_curve
+            state.dirty = True
             self._apply_visibility_state(state)
 
         return new_show_curve
@@ -399,6 +407,7 @@ class RopeBuilderController:
         """Toggle between showing spline or collision capsules on the active cable."""
         state = self._get_state()
         state.show_curve = not state.show_curve
+        state.dirty = True        
         self._apply_visibility_state(state)
         return state.show_curve
 
@@ -414,6 +423,7 @@ class RopeBuilderController:
         state.plug_joint_end = None
         state.plug_start_orient_offset = None
         state.plug_end_orient_offset = None
+        state.dirty = True
         self._update_anchors_and_plugs(state)
 
     def discover_plugs_from_joints(self) -> Tuple[Optional[str], Optional[str]]:
@@ -466,6 +476,7 @@ class RopeBuilderController:
         state.plug_end_path = found_end
         state.plug_start_orient_offset = None
         state.plug_end_orient_offset = None
+        state.dirty = True
         return found_start, found_end
 
     def showing_curve(self) -> bool:
@@ -750,20 +761,73 @@ class RopeBuilderController:
             pts_world.append(pos + dir_x * (half_len_last + extension))
 
         curves = UsdGeom.BasisCurves(curve_prim)
+
+        counts_attr = curves.GetCurveVertexCountsAttr()
+        if not counts_attr:
+            counts_attr = curves.CreateCurveVertexCountsAttr()
+
+        points_attr = curves.GetPointsAttr()
+        if not points_attr:
+            points_attr = curves.CreatePointsAttr()
+
         if len(pts_world) < 2:
-            curves.CreateCurveVertexCountsAttr().Set(Vt.IntArray([0]))
-            curves.CreatePointsAttr().Set(Vt.Vec3fArray())
+            counts_attr.Set(Vt.IntArray([0]))
+            points_attr.Set(Vt.Vec3fArray())
             return
 
         local_pts = self._world_to_local_points(curve_prim, pts_world)
-        curves.CreateCurveVertexCountsAttr().Set(Vt.IntArray([len(local_pts)]))
-        curves.CreatePointsAttr().Set(Vt.Vec3fArray(local_pts))
+        counts_attr.Set(Vt.IntArray([len(local_pts)]))
+        points_attr.Set(Vt.Vec3fArray(local_pts))
 
     def _on_curve_update(self, root_path: str, _dt):
         state = self._cables.get(root_path)
         if not state:
             return
+
+        # Throttle updates to reduce idle cost.
+        try:
+            dt = float(_dt) if _dt is not None else 0.0
+        except Exception:
+            dt = 0.0
+
+        state._accum_dt += dt
+        if state._accum_dt < (1.0 / 20.0):  # ~20 Hz
+            return
+        state._accum_dt = 0.0
+
+        stage = self._usd_context.get_stage()
+
+        # Cheap movement detection if not marked dirty.
+        if not state.dirty:
+            if stage and state.segment_paths:
+                p0 = self._segment_world_pos(stage, state.segment_paths[0])
+                p1 = self._segment_world_pos(stage, state.segment_paths[-1])
+                if p0 is not None and p1 is not None:
+                    last = state._last_endpoints
+                    eps = 1e-5
+                    if (
+                        last is None
+                        or (Gf.Vec3f(p0) - last[0]).GetLength() > eps
+                        or (Gf.Vec3f(p1) - last[1]).GetLength() > eps
+                    ):
+                        state.dirty = True
+                        state._last_endpoints = (Gf.Vec3f(p0), Gf.Vec3f(p1))
+
+            if not state.dirty:
+                return
+
+        # Full update when dirty.
         self._update_curve_points(state)
+        self._update_anchors_and_plugs(state)
+
+        # Refresh endpoint cache after update.
+        if stage and state.segment_paths:
+            p0 = self._segment_world_pos(stage, state.segment_paths[0])
+            p1 = self._segment_world_pos(stage, state.segment_paths[-1])
+            if p0 is not None and p1 is not None:
+                state._last_endpoints = (Gf.Vec3f(p0), Gf.Vec3f(p1))
+
+        state.dirty = False
 
     def _segment_world_pos(self, stage, path: str) -> Optional[Gf.Vec3f]:
         prim = stage.GetPrimAtPath(path)
@@ -827,6 +891,8 @@ class RopeBuilderController:
         if not state.update_subscription:
             self._update_curve_points(state)
         self._update_anchors_and_plugs(state)
+
+        state.dirty = True
 
     def _compose_joint_rotation(self, targets: Dict[str, float]) -> Gf.Quatd:
         """Compose a rotation quaternion from rotX/Y/Z drive targets in degrees."""
