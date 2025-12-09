@@ -340,7 +340,7 @@ class RopeBuilderController:
     def attach_plugs(self, start_plug: Optional[str] = None, end_plug: Optional[str] = None):
         """Record plug rigid bodies (user-created joints/manual placement expected)."""
         state = self._get_state()
-        stage = self._require_stage()
+        _ = self._require_stage()  # Ensure a stage exists even though we do not author joints here.
 
         state.plug_start_path = start_plug
         state.plug_end_path = end_plug
@@ -812,7 +812,7 @@ class RopeBuilderController:
         xf.AddOrientOp().Set(qf)
 
     def _match_anchor_pose(self, stage, anchor_path: str, plug_path: str, rot_offset: Optional[Gf.Quatd]):
-        """Drive plug position and orientation to match the anchor for posing."""
+        """Drive plug position to anchor and orientation by applying the cached offset (if present)."""
         anchor_prim = stage.GetPrimAtPath(anchor_path)
         plug_prim = stage.GetPrimAtPath(plug_path)
         if not anchor_prim or not anchor_prim.IsValid() or not plug_prim or not plug_prim.IsValid():
@@ -846,6 +846,7 @@ class RopeBuilderController:
                 orient_op.Set(rot)
             else:
                 orient_op.Set(Gf.Quatf(float(rot.GetReal()), Gf.Vec3f(rot.GetImaginary())))
+        # If no offset was captured, leave orientation untouched so manual edits are preserved.
 
     def _match_anchor_to_plug(self, stage, anchor_path: str, plug_path: str):
         anchor_prim = stage.GetPrimAtPath(anchor_path)
