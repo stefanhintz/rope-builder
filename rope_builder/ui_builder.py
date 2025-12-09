@@ -15,6 +15,7 @@
 import math
 
 import omni.ui as ui
+from omni.ui import color as cl
 from isaacsim.gui.components.element_wrappers import CollapsableFrame
 from isaacsim.gui.components.ui_utils import get_style
 from omni.usd import StageEventType
@@ -537,9 +538,16 @@ class UIBuilder:
                                             clicked_fn=lambda i=idx, ax=axis: self._on_reset_joint_axis(i, ax),
                                             tooltip=f"Reset {axis} to zero within limits",
                                             style={
-                                                "background_color": 0xFF2196F3,
-                                                "border_radius": 3,
-                                                "border_color": 0xFF2196F3,
+                                                "Button": {
+                                                    "background_color": cl(0xFF2196F3),
+                                                    "border_color": cl(0xFF2196F3),
+                                                    "border_width": 1,
+                                                    "border_radius": 3,
+                                                    "padding": 0,
+                                                    "margin": 0,
+                                                },
+                                                "Button:hovered": {"background_color": cl(0xFF42A5F5)},
+                                                "Button:pressed": {"background_color": cl(0xFF1E88E5)},
                                             },
                                         )
                                 self._joint_slider_models[(idx, axis)] = model
