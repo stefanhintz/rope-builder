@@ -88,6 +88,7 @@ class UIBuilder:
         self._known_cables_model = ui.SimpleStringModel("No cables yet.")
         self._plug_start_model = ui.SimpleStringModel("")
         self._plug_end_model = ui.SimpleStringModel("")
+        self._syncing_joint_build = False
 
     ###################################################################################
     #           The Functions Below Are Called Automatically By extension.py
@@ -700,67 +701,84 @@ class UIBuilder:
         except Exception:
             offsets_by_index = {}
 
-        with self._joint_frame:
-            if not data:
-                ui.Label("Create a cable to edit joint drive targets.", style=get_style())
-                return
+        self._syncing_joint_build = True
+        try:
+            with self._joint_frame:
+                if not data:
+                    ui.Label("Create a cable to edit joint drive targets.", style=get_style())
+                    return
 
-            with ui.VStack(style=get_style(), spacing=6, height=0):
-                for info in data:
-                    idx = info.get("index", 0)
-                    limits = info.get("limits", {})
-                    targets = info.get("targets", {})
-                    # Align label and sliders horizontally with compact spacing.
-                    with ui.HStack(height=0, spacing=20):
-                        ui.Label(f"Joint {idx}", width=80, style=get_style())
-                        with ui.HStack(height=0, spacing=8):
-                            for axis in ROT_AXES:
-                                low, high = limits.get(axis, (-180.0, 180.0))
-                                # Prefer imported local offset orientation for initial slider value.
-                                init_val = targets.get(axis, 0.0)
-                                offs = offsets_by_index.get(idx)
-                                if offs:
-                                    euler = offs.get("local_rot0_euler")
-                                    if euler and len(euler) == 3:
-                                        if axis == "rotX":
-                                            init_val = float(euler[0])
-                                        elif axis == "rotY":
-                                            init_val = float(euler[1])
-                                        elif axis == "rotZ":
-                                            init_val = float(euler[2])
-                                model = ui.SimpleFloatModel(init_val)
-                                model.add_value_changed_fn(
-                                    lambda m, i=idx, ax=axis: self._on_joint_slider_changed(i, ax, m.as_float)
-                                )
-                                with ui.VStack(height=0, spacing=2):
-                                    ui.Label(f"{axis}", width=24, style=get_style())
-                                    with ui.HStack(height=18, spacing=4):
-                                        ui.FloatSlider(min=low, max=high, model=model, style=get_style(), height=18)
-                                        ui.Button(
-                                            "·",
-                                            width=18,
-                                            height=18,
-                                            alignment=ui.Alignment.CENTER,
-                                            clicked_fn=lambda i=idx, ax=axis: self._on_reset_joint_axis(i, ax),
-                                            tooltip=f"Reset {axis} to zero within limits",
-                                            style={
-                                                "Button": {
-                                                    "background_color": cl(0xFF2196F3),
-                                                    "border_color": cl(0xFF2196F3),
-                                                    "border_width": 1,
-                                                    "border_radius": 3,
-                                                    "padding": 0,
-                                                    "margin": 0,
-                                                    "min_width": 18,
-                                                    "max_width": 18,
-                                                    "min_height": 18,
-                                                    "max_height": 18,
+                with ui.VStack(style=get_style(), spacing=6, height=0):
+                    for info in data:
+                        idx = info.get("index", 0)
+                        limits = info.get("limits", {})
+                        targets = info.get("targets", {})
+                        # Align label and sliders horizontally with compact spacing.
+                        with ui.HStack(height=0, spacing=20):
+                            ui.Label(f"Joint {idx}", width=80, style=get_style())
+                            with ui.HStack(height=0, spacing=8):
+                                for axis in ROT_AXES:
+                                    low, high = limits.get(axis, (-180.0, 180.0))
+                                    # Prefer imported local offset orientation for initial slider value.
+                                    init_val = targets.get(axis, 0.0)
+                                    offs = offsets_by_index.get(idx)
+                                    used_offset = False
+                                    if offs:
+                                        euler = offs.get("local_rot0_euler")
+                                        if euler and len(euler) == 3:
+                                            if axis == "rotX":
+                                                init_val = float(euler[0])
+                                                used_offset = True
+                                            elif axis == "rotY":
+                                                init_val = float(euler[1])
+                                                used_offset = True
+                                            elif axis == "rotZ":
+                                                init_val = float(euler[2])
+                                                used_offset = True
+
+                                    # Seed controller targets from local offsets so editing one joint
+                                    # doesn't implicitly zero others.
+                                    if used_offset:
+                                        try:
+                                            self._controller.set_joint_drive_target(idx, axis, init_val, apply_pose=True)
+                                        except Exception:
+                                            pass
+
+                                    model = ui.SimpleFloatModel(init_val)
+                                    model.add_value_changed_fn(
+                                        lambda m, i=idx, ax=axis: self._on_joint_slider_changed(i, ax, m.as_float)
+                                    )
+                                    with ui.VStack(height=0, spacing=2):
+                                        ui.Label(f"{axis}", width=24, style=get_style())
+                                        with ui.HStack(height=18, spacing=4):
+                                            ui.FloatSlider(min=low, max=high, model=model, style=get_style(), height=18)
+                                            ui.Button(
+                                                "·",
+                                                width=18,
+                                                height=18,
+                                                alignment=ui.Alignment.CENTER,
+                                                clicked_fn=lambda i=idx, ax=axis: self._on_reset_joint_axis(i, ax),
+                                                tooltip=f"Reset {axis} to zero within limits",
+                                                style={
+                                                    "Button": {
+                                                        "background_color": cl(0xFF2196F3),
+                                                        "border_color": cl(0xFF2196F3),
+                                                        "border_width": 1,
+                                                        "border_radius": 3,
+                                                        "padding": 0,
+                                                        "margin": 0,
+                                                        "min_width": 18,
+                                                        "max_width": 18,
+                                                        "min_height": 18,
+                                                        "max_height": 18,
+                                                    },
+                                                    "Button:hovered": {"background_color": cl(0xFF42A5F5)},
+                                                    "Button:pressed": {"background_color": cl(0xFF1E88E5)},
                                                 },
-                                                "Button:hovered": {"background_color": cl(0xFF42A5F5)},
-                                                "Button:pressed": {"background_color": cl(0xFF1E88E5)},
-                                            },
-                                        )
-                                self._joint_slider_models[(idx, axis)] = model
+                                            )
+                                    self._joint_slider_models[(idx, axis)] = model
+        finally:
+            self._syncing_joint_build = False
 
     def _clear_joint_controls(self):
         if not self._joint_frame:
@@ -771,6 +789,8 @@ class UIBuilder:
             ui.Label("Create a cable to edit joint drive targets.", style=get_style())
 
     def _on_joint_slider_changed(self, joint_index: int, axis: str, value: float):
+        if getattr(self, "_syncing_joint_build", False):
+            return
         clamped = self._controller.set_joint_drive_target(joint_index, axis, value, apply_pose=True)
         model = self._joint_slider_models.get((joint_index, axis))
         if model and abs(model.as_float - clamped) > 1e-6:
