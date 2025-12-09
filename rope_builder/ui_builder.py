@@ -506,16 +506,18 @@ class UIBuilder:
                     limits = info.get("limits", {})
                     targets = info.get("targets", {})
                     ui.Label(f"Joint {idx}", style=get_style())
-                    for axis in ROT_AXES:
-                        low, high = limits.get(axis, (-180.0, 180.0))
-                        model = ui.SimpleFloatModel(targets.get(axis, 0.0))
-                        model.add_value_changed_fn(
-                            lambda m, i=idx, ax=axis: self._on_joint_slider_changed(i, ax, m.as_float)
-                        )
-                        with ui.HStack(height=0):
-                            ui.Label(f"{axis}", width=50, style=get_style())
-                            ui.FloatSlider(min=low, max=high, model=model)
-                        self._joint_slider_models[(idx, axis)] = model
+                    # Put rotX, rotY, rotZ on a single row for aligned comparison.
+                    with ui.HStack(height=0, spacing=8):
+                        for axis in ROT_AXES:
+                            low, high = limits.get(axis, (-180.0, 180.0))
+                            model = ui.SimpleFloatModel(targets.get(axis, 0.0))
+                            model.add_value_changed_fn(
+                                lambda m, i=idx, ax=axis: self._on_joint_slider_changed(i, ax, m.as_float)
+                            )
+                            with ui.VStack(height=0, spacing=2):
+                                ui.Label(f"{axis}", width=40, style=get_style())
+                                ui.FloatSlider(min=low, max=high, model=model, width=180)
+                            self._joint_slider_models[(idx, axis)] = model
 
     def _clear_joint_controls(self):
         if not self._joint_frame:
