@@ -262,6 +262,13 @@ class UIBuilder:
         self._refresh_active_tree()
         self._active_path_model.set_value(self._controller.active_cable_path() or "")
 
+        # Enable global actions as soon as we have any cables, even if none is "active" yet.
+        has_cables = bool(self._controller.list_cable_paths())
+        if self._subscription_btn:
+            self._subscription_btn.enabled = has_cables
+        if self._toggle_vis_btn:
+            self._toggle_vis_btn.enabled = has_cables
+
     def _on_param_change(self, key: str, value):
         if self._syncing_models:
             return
@@ -472,12 +479,19 @@ class UIBuilder:
                 model.set_value(int(value))
 
         if hasattr(self, "_delete_btn"):
-            exists = self._controller.rope_exists()
-            self._delete_btn.enabled = exists
-            self._reset_joint_btn.enabled = exists
-            self._subscription_btn.enabled = exists
-            self._toggle_vis_btn.enabled = exists
-            if exists:
+            # Active-cable-only actions depend on an active cable.
+            active_exists = self._controller.rope_exists()
+            self._delete_btn.enabled = active_exists
+            self._reset_joint_btn.enabled = active_exists
+
+            # Global actions depend on having any cables at all.
+            has_cables = bool(self._controller.list_cable_paths())
+            if self._subscription_btn:
+                self._subscription_btn.enabled = has_cables
+            if self._toggle_vis_btn:
+                self._toggle_vis_btn.enabled = has_cables
+
+            if active_exists:
                 self._auto_attach_plugs()
 
         plug_start, plug_end = self._controller.get_plug_paths()
