@@ -517,28 +517,28 @@ class UIBuilder:
                     idx = info.get("index", 0)
                     limits = info.get("limits", {})
                     targets = info.get("targets", {})
-                    ui.Label(f"Joint {idx}", style=get_style())
-                    # Put rotX, rotY, rotZ on a single row for aligned comparison.
-                    with ui.HStack(height=0, spacing=8):
-                        with ui.VStack(height=0, spacing=2):
-                            ui.Label("", width=24)  # spacer to align with labels
-                        for axis in ROT_AXES:
-                            low, high = limits.get(axis, (-180.0, 180.0))
-                            model = ui.SimpleFloatModel(targets.get(axis, 0.0))
-                            model.add_value_changed_fn(
-                                lambda m, i=idx, ax=axis: self._on_joint_slider_changed(i, ax, m.as_float)
+                    # Align label and sliders horizontally with compact spacing.
+                    with ui.HStack(height=0, spacing=20):
+                        ui.Label(f"Joint {idx}", width=80, style=get_style())
+                        with ui.HStack(height=0, spacing=8):
+                            for axis in ROT_AXES:
+                                low, high = limits.get(axis, (-180.0, 180.0))
+                                model = ui.SimpleFloatModel(targets.get(axis, 0.0))
+                                model.add_value_changed_fn(
+                                    lambda m, i=idx, ax=axis: self._on_joint_slider_changed(i, ax, m.as_float)
+                                )
+                                with ui.VStack(height=0, spacing=2):
+                                    ui.Label(f"{axis}", width=24, style=get_style())
+                                    ui.FloatSlider(min=low, max=high, model=model, style=get_style(), height=0)
+                                self._joint_slider_models[(idx, axis)] = model
+                            ui.Button(
+                                "",
+                                width=18,
+                                height=18,
+                                clicked_fn=lambda i=idx: self._on_reset_joint_row(i),
+                                tooltip="Reset rotX/rotY/rotZ of this joint to zero (within limits)",
+                                style={"background_color": 0xFF1E88E5, "border_radius": 3},
                             )
-                            with ui.VStack(height=0, spacing=2):
-                                ui.Label(f"{axis}", width=24, style=get_style())
-                                ui.FloatSlider(min=low, max=high, model=model, style=get_style(), height=0)
-                            self._joint_slider_models[(idx, axis)] = model
-                        ui.Button(
-                            "Reset",
-                            width=70,
-                            clicked_fn=lambda i=idx: self._on_reset_joint_row(i),
-                            tooltip="Reset rotX/rotY/rotZ of this joint to zero (within limits)",
-                            style={"background_color": 0xFF1E88E5, "border_radius": 4},
-                        )
 
     def _clear_joint_controls(self):
         if not self._joint_frame:
