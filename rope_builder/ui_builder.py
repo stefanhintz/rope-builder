@@ -494,8 +494,9 @@ class UIBuilder:
 
         rope_len, path_len = result
 
-        # Rebuild joint controls so sliders reflect the updated pose.
-        self._build_joint_controls()
+        # Rebuild joint controls so sliders reflect the updated pose, but do not
+        # re-seed controller targets from local offsets (which would re-pose).
+        self._build_joint_controls(seed_from_offsets=False)
 
         mismatch = abs(path_len - rope_len)
         if mismatch > 1e-3:
@@ -740,7 +741,7 @@ class UIBuilder:
 
         self._refresh_subscription_btn()
 
-    def _build_joint_controls(self):
+    def _build_joint_controls(self, seed_from_offsets: bool = True):
         if not self._joint_frame:
             return
 
@@ -794,7 +795,7 @@ class UIBuilder:
 
                                     # Seed controller targets from local offsets so editing one joint
                                     # doesn't implicitly zero others.
-                                    if used_offset:
+                                    if seed_from_offsets and used_offset:
                                         try:
                                             self._controller.set_joint_drive_target(idx, axis, init_val, apply_pose=True)
                                         except Exception:
