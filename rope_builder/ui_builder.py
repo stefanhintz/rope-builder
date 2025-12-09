@@ -89,6 +89,7 @@ class UIBuilder:
         self._plug_start_model = ui.SimpleStringModel("")
         self._plug_end_model = ui.SimpleStringModel("")
         self._syncing_joint_build = False
+        self._joint_limit_hint_model = ui.SimpleStringModel("")
 
     ###################################################################################
     #           The Functions Below Are Called Automatically By extension.py
@@ -133,12 +134,7 @@ class UIBuilder:
 
                 ui.Separator(height=6)
                 ui.Label("Joint Limits (degrees)", style=get_style())
-                self._build_float_field("rotX low", "rot_x_low", min_value=-180.0, step=1.0)
-                self._build_float_field("rotX high", "rot_x_high", min_value=-180.0, step=1.0)
-                self._build_float_field("rotY low", "rot_y_low", min_value=-180.0, step=1.0)
-                self._build_float_field("rotY high", "rot_y_high", min_value=-180.0, step=1.0)
-                self._build_float_field("rotZ low", "rot_z_low", min_value=-180.0, step=1.0)
-                self._build_float_field("rotZ high", "rot_z_high", min_value=-180.0, step=1.0)
+                self._build_joint_limit_span_field()
 
                 ui.Separator(height=6)
                 ui.Label("Drive Settings", style=get_style())
@@ -257,6 +253,23 @@ class UIBuilder:
 
         self._param_models[param_key] = model
 
+    def _build_joint_limit_span_field(self):
+        params = self._controller.parameters
+        span = self._current_joint_limit_span(params)
+        model = ui.SimpleFloatModel(span)
+        model.add_value_changed_fn(lambda m: self._on_joint_limit_span_change(m.as_float))
+
+        self._param_constraints["joint_limit_span"] = {"min": 0.0, "type": float, "max": 360.0}
+
+        with ui.VStack(height=0, spacing=2):
+            with ui.HStack(height=0):
+                ui.Label("Max DoF (deg)", width=140, style=get_style())
+                ui.FloatField(model=model)
+            self._joint_limit_hint_model.set_value(self._joint_limit_hint_text(span))
+            ui.Label("", model=self._joint_limit_hint_model, style=get_style())
+
+        self._param_models["joint_limit_span"] = model
+
     def _on_discover_cables_button(self):
         print("[RopeBuilder UI] Discover button clicked")
         
@@ -305,6 +318,28 @@ class UIBuilder:
                     model.set_value(value)
                 else:
                     model.set_value(int(value))
+            finally:
+                self._syncing_models = False
+
+    def _on_joint_limit_span_change(self, value: float):
+        if self._syncing_models:
+            return
+
+        span, changed = self._apply_constraints("joint_limit_span", value)
+        params = self._controller.parameters
+        params.rot_limit_span = span
+        self._controller.set_parameters(params)
+
+        hint_text = self._joint_limit_hint_text(span)
+        self._joint_limit_hint_model.set_value(hint_text)
+        status_msg = f"Updated joint limits to +/-{span * 0.5:.1f} degrees for rotX/rotY/rotZ."
+        self._update_status(status_msg, warn=not self._controller.validate_parameters())
+
+        model = self._param_models.get("joint_limit_span")
+        if changed and model is not None:
+            self._syncing_models = True
+            try:
+                model.set_value(span)
             finally:
                 self._syncing_models = False
 
@@ -491,6 +526,8 @@ class UIBuilder:
             else:
                 model.set_value(int(value))
 
+        self._joint_limit_hint_model.set_value(self._joint_limit_hint_text(self._current_joint_limit_span(params)))
+
         if hasattr(self, "_delete_btn"):
             # Active-cable-only actions depend on an active cable.
             active_exists = self._controller.rope_exists()
@@ -602,6 +639,19 @@ class UIBuilder:
             updated_value = min(updated_value, max_value)
 
         return updated_value, updated_value != value
+
+    def _current_joint_limit_span(self, params) -> float:
+        try:
+            return max(float(getattr(params, "rot_limit_span", 0.0)), 0.0)
+        except Exception:
+            try:
+                return float(getattr(params, "rot_x_high", 0.0) - getattr(params, "rot_x_low", 0.0))
+            except Exception:
+                return 0.0
+
+    def _joint_limit_hint_text(self, span: float) -> str:
+        half = max(span * 0.5, 0.0)
+        return f"Lower limit: {-half:.1f}   Upper limit: {half:.1f} (rotX/rotY/rotZ)"
 
     def _segment_max_limit(self) -> int:
         """Compute the maximum segments allowed so each is longer than two radii."""

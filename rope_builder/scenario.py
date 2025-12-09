@@ -37,6 +37,7 @@ class RopeParameters:
     radius: float = 0.01  # meters
     segment_count: int = 8
     mass: float = 1.0  # kilograms total
+    rot_limit_span: float = 60.0  # total allowed rotation, split symmetrically about 0
     rot_x_low: float = -30.0  # degrees
     rot_x_high: float = 30.0
     rot_y_low: float = -30.0
@@ -69,10 +70,11 @@ class RopeParameters:
 
     @property
     def rot_limits(self) -> Dict[str, Tuple[float, float]]:
+        half = max(self.rot_limit_span * 0.5, 0.0)
         return {
-            "rotX": (self.rot_x_low, self.rot_x_high),
-            "rotY": (self.rot_y_low, self.rot_y_high),
-            "rotZ": (self.rot_z_low, self.rot_z_high),
+            "rotX": (-half, half),
+            "rotY": (-half, half),
+            "rotZ": (-half, half),
         }
 
 
@@ -125,6 +127,7 @@ class RopeBuilderController:
     def set_parameters(self, params: RopeParameters):
         self._params = params
         self._ensure_parameter_defaults()
+        self._sync_rot_limits_from_span()
         carb.log_info(f"[RopeBuilder] Updated parameters: {self._params}")
 
     def active_cable_path(self) -> Optional[str]:
@@ -678,9 +681,28 @@ class RopeBuilderController:
 
     def _ensure_parameter_defaults(self):
         """Fill in any missing attributes when hot-reloading older state."""
+        had_span = hasattr(self._params, "rot_limit_span")
         for field in DEFAULT_PARAMS.__dataclass_fields__.keys():
             if not hasattr(self._params, field):
                 setattr(self._params, field, getattr(DEFAULT_PARAMS, field))
+
+        # Older cached params won't have rot_limit_span. Derive it from X limits if missing.
+        if not had_span:
+            try:
+                span = float(getattr(self._params, "rot_x_high", 30.0) - getattr(self._params, "rot_x_low", -30.0))
+            except Exception:
+                span = DEFAULT_PARAMS.rot_limit_span
+            self._params.rot_limit_span = max(span, 0.0)
+
+        self._sync_rot_limits_from_span()
+
+    def _sync_rot_limits_from_span(self):
+        """Keep per-axis limits symmetric based on the configured span."""
+        half = max(float(getattr(self._params, "rot_limit_span", DEFAULT_PARAMS.rot_limit_span)) * 0.5, 0.0)
+        lows = (-half, -half, -half)
+        highs = (half, half, half)
+        self._params.rot_x_low, self._params.rot_y_low, self._params.rot_z_low = lows
+        self._params.rot_x_high, self._params.rot_y_high, self._params.rot_z_high = highs
 
     @staticmethod
     def _validate_params(params: RopeParameters) -> bool:
@@ -1244,11 +1266,16 @@ class RopeBuilderController:
                     max_force = float(mf_attr.Get())
 
         inner_count = max(len(segment_paths) - 2, 1)
+        span = DEFAULT_PARAMS.rot_limit_span
+        if joint_paths:
+            x_low, x_high = limits.get(joint_paths[0], {}).get("rotX", (-30.0, 30.0))
+            span = float(x_high - x_low)
         params = RopeParameters(
             length=total_len,
             radius=radius,
             segment_count=inner_count,
             mass=mass_total,
+            rot_limit_span=span,
             rot_x_low=limits.get(joint_paths[0], {}).get("rotX", (-30.0, 30.0))[0] if joint_paths else -30.0,
             rot_x_high=limits.get(joint_paths[0], {}).get("rotX", (-30.0, 30.0))[1] if joint_paths else 30.0,
             rot_y_low=limits.get(joint_paths[0], {}).get("rotY", (-30.0, 30.0))[0] if joint_paths else -30.0,
@@ -1260,6 +1287,9 @@ class RopeBuilderController:
             drive_max_force=max_force,
             curve_width_scale=DEFAULT_PARAMS.curve_width_scale,
         )
+        half_span = max(span * 0.5, 0.0)
+        params.rot_x_low = params.rot_y_low = params.rot_z_low = -half_span
+        params.rot_x_high = params.rot_y_high = params.rot_z_high = half_span
         return params, limits, seg_lengths
 
     def get_joint_local_offsets(self, root_path: Optional[str] = None) -> List[Dict[str, Any]]:
