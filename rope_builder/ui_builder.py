@@ -63,13 +63,13 @@ class UIBuilder:
 
     def on_stage_event(self, event):
         if event.type == int(StageEventType.OPENED):
-            for path in list(self._controller.list_cable_paths()):
-                self._controller.delete_rope(path)
+            # Only clear cached state on stage reopen; keep existing prims intact.
+            self._controller.forget_all_cables()
             self._reset_ui()
 
     def cleanup(self):
-        for path in list(self._controller.list_cable_paths()):
-            self._controller.delete_rope(path)
+        # Do not delete prims on shutdown; just clear controller state/subscriptions.
+        self._controller.forget_all_cables()
 
     def build_ui(self):
         """Called when the window is (re)built."""

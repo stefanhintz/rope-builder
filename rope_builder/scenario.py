@@ -296,6 +296,13 @@ class RopeBuilderController:
         if self._active_path == state.root_path:
             self._active_path = self.list_cable_paths()[0] if self._cables else None
 
+    def forget_all_cables(self):
+        """Drop all cached cable state without touching stage prims (used on stage reload/exit)."""
+        for root_path in list(self._cables.keys()):
+            self.stop_curve_updates(root_path)
+        self._cables.clear()
+        self._active_path = None
+
     def validate_parameters(self) -> bool:
         return self._validate_params(self._params)
 
