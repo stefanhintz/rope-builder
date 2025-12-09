@@ -19,6 +19,7 @@ from omni.ui import color as cl
 from isaacsim.gui.components.element_wrappers import CollapsableFrame
 from isaacsim.gui.components.ui_utils import get_style
 from omni.usd import StageEventType
+from omni.timeline import TimelineEventType
 
 from .scenario import ROT_AXES, RopeBuilderController
 
@@ -99,8 +100,14 @@ class UIBuilder:
         pass
 
     def on_timeline_event(self, event):
-        # Rope authoring does not depend on the timeline yet.
-        pass
+        # Hide shape handles during simulation; show them again when stopped.
+        try:
+            if event.type == int(TimelineEventType.PLAY):
+                self._controller.set_shape_handles_visible_all(False)
+            elif event.type == int(TimelineEventType.STOP):
+                self._controller.set_shape_handles_visible_all(True)
+        except Exception:
+            pass
 
     def on_physics_step(self, step: float):
         pass

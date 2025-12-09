@@ -344,6 +344,18 @@ class RopeBuilderController:
             if (not off.get("local_rot1_authored", False)):
                 off.setdefault("local_rot1_euler", (0.0, 0.0, 0.0))
 
+        # Discover any existing shape handles under this cable root so they can
+        # be used for edit-mode fitting.
+        handle_regex = re.compile(r"handle_(\d+)$")
+        handle_pairs: List[Tuple[int, str]] = []
+        for child in root_prim.GetChildren():
+            name = child.GetName()
+            m = handle_regex.search(name)
+            if m:
+                handle_pairs.append((int(m.group(1)), child.GetPath().pathString))
+        handle_pairs.sort(key=lambda x: x[0])
+        handle_paths = [p for _, p in handle_pairs]
+
         curve_path = f"{root_path}/curve"
         anchor_start = f"{root_path}/anchor_start"
         anchor_end = f"{root_path}/anchor_end"
@@ -359,6 +371,7 @@ class RopeBuilderController:
             joint_local_offsets=joint_local_offsets,
             anchor_start=anchor_start,
             anchor_end=anchor_end,
+            handle_paths=handle_paths,
         )
         self._cables[root_path] = state
         state.dirty = True
@@ -635,6 +648,20 @@ class RopeBuilderController:
                     if over > max_over:
                         max_over = over
         return count, max_over
+
+    def set_shape_handles_visible_all(self, visible: bool):
+        """Show or hide all known shape handles across all cables."""
+        stage = self._usd_context.get_stage()
+        if not stage:
+            return
+
+        for state in self._cables.values():
+            for hpath in getattr(state, "handle_paths", []) or []:
+                prim = stage.GetPrimAtPath(hpath)
+                if not prim or not prim.IsValid():
+                    continue
+                img = UsdGeom.Imageable(prim)
+                img.MakeVisible() if visible else img.MakeInvisible()
 
     def fit_rope_to_anchors(self, root_path: Optional[str] = None) -> Optional[Tuple[float, float]]:
         """Repose the rope along a geometric curve between anchors in edit mode.
