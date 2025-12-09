@@ -96,7 +96,7 @@ class CableState:
     plug_end_orient_offset: Optional[Gf.Quatd] = None
     show_curve: bool = True
     update_subscription: Optional[Any] = None
-     # Performance helpers
+    # Performance helpers
     dirty: bool = True
     _accum_dt: float = 0.0
     _last_endpoints: Optional[Tuple[Gf.Vec3f, Gf.Vec3f]] = None
@@ -785,10 +785,12 @@ class RopeBuilderController:
             return
 
         # Throttle updates to reduce idle cost.
+        # In Isaac Sim 5.0 the update stream may pass an event object, not a float dt.
         try:
             dt = float(_dt) if _dt is not None else 0.0
         except Exception:
-            dt = 0.0
+            # Fallback to an estimated frame dt so throttling still progresses.
+            dt = 1.0 / 60.0
 
         state._accum_dt += dt
         if state._accum_dt < (1.0 / 20.0):  # ~20 Hz
