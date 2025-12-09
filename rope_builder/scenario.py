@@ -348,8 +348,15 @@ class RopeBuilderController:
 
         start_seg = state.segment_paths[0] if state.segment_paths else None
         end_seg = state.segment_paths[-1] if state.segment_paths else None
-        anchor_start_pose = self._segment_frame(stage, state.anchor_start) if state.anchor_start else None
-        anchor_end_pose = self._segment_frame(stage, state.anchor_end) if state.anchor_end else None
+        start_len = state.segment_lengths[0] if state.segment_paths and state.segment_lengths else state.params.segment_length
+        end_len = state.segment_lengths[-1] if state.segment_paths and state.segment_lengths else state.params.segment_length
+        start_tip_pose = self._segment_tip_pose(stage, start_seg, start_len, -1.0)
+        end_tip_pose = self._segment_tip_pose(stage, end_seg, end_len, 1.0)
+        # Fallback to anchor pose if tip pose is unavailable.
+        if not start_tip_pose and state.anchor_start:
+            start_tip_pose = self._segment_frame(stage, state.anchor_start)
+        if not end_tip_pose and state.anchor_end:
+            end_tip_pose = self._segment_frame(stage, state.anchor_end)
 
         def deactivate_joint(joint_path: str):
             prim = stage.GetPrimAtPath(joint_path)
@@ -358,17 +365,18 @@ class RopeBuilderController:
 
         def create_fixed(segment_path: Optional[str], plug_path: Optional[str], suffix: str, pivot_pose) -> Optional[str]:
             joint_path = f"{state.root_path}/plug_joint_{suffix}"
-            if not segment_path or not plug_path or not pivot_pose:
-                deactivate_joint(joint_path)
-                return None
-            seg_local = self._local_pose_from_world(stage, segment_path, pivot_pose[0], pivot_pose[1])
-            plug_local = self._local_pose_from_world(stage, plug_path, pivot_pose[0], pivot_pose[1])
-            if not seg_local or not plug_local:
-                deactivate_joint(joint_path)
-                return None
             fixed = UsdPhysics.FixedJoint.Define(stage, joint_path)
             prim = fixed.GetPrim()
+            if not segment_path or not plug_path:
+                prim.SetActive(False)
+                return None
             prim.SetActive(True)
+            pivot = pivot_pose or (Gf.Vec3d(0.0, 0.0, 0.0), Gf.Quatd(1.0, 0.0, 0.0, 0.0))
+            seg_local = self._local_pose_from_world(stage, segment_path, pivot[0], pivot[1])
+            plug_local = self._local_pose_from_world(stage, plug_path, pivot[0], pivot[1])
+            if not seg_local or not plug_local:
+                prim.SetActive(False)
+                return None
             fixed.CreateBody0Rel().SetTargets([segment_path])
             fixed.CreateBody1Rel().SetTargets([plug_path])
             fixed.CreateLocalPos0Attr(seg_local[0])
@@ -377,8 +385,8 @@ class RopeBuilderController:
             fixed.CreateLocalRot1Attr(plug_local[1])
             return joint_path
 
-        state.plug_joint_start = create_fixed(start_seg, state.plug_start_path, "start", anchor_start_pose)
-        state.plug_joint_end = create_fixed(end_seg, state.plug_end_path, "end", anchor_end_pose)
+        state.plug_joint_start = create_fixed(start_seg, state.plug_start_path, "start", start_tip_pose)
+        state.plug_joint_end = create_fixed(end_seg, state.plug_end_path, "end", end_tip_pose)
         self._update_anchors_and_plugs(state)
 
     def showing_curve(self) -> bool:
@@ -660,6 +668,20 @@ class RopeBuilderController:
         pos = Gf.Vec3d(m.ExtractTranslation())
         rot = m.ExtractRotation().GetQuat()
         return pos, rot
+
+    def _segment_tip_pose(
+        self, stage, segment_path: Optional[str], seg_len: float, direction: float
+    ) -> Optional[Tuple[Gf.Vec3d, Gf.Quatd]]:
+        """Return world pose at the tip of a segment along +X/-X (direction=1/-1)."""
+        if not segment_path:
+            return None
+        pose = self._segment_frame(stage, segment_path)
+        if not pose:
+            return None
+        pos, rot = pose
+        dir_x = Gf.Rotation(rot).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
+        tip_pos = pos + dir_x * (direction * seg_len * 0.5)
+        return tip_pos, rot
 
     def _local_pose_from_world(
         self, stage, body_path: str, world_pos: Gf.Vec3d, world_rot: Gf.Quatd
