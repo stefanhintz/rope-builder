@@ -525,7 +525,10 @@ class UIBuilder:
     def _reset_ui(self):
         params = self._controller.parameters
         for key, model in self._param_models.items():
-            value = getattr(params, key)
+            if key == "joint_limit_span":
+                value = self._current_joint_limit_span(params)
+            else:
+                value = getattr(params, key)
             if isinstance(model, ui.SimpleFloatModel):
                 model.set_value(value)
             else:
