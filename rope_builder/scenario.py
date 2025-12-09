@@ -492,6 +492,42 @@ class RopeBuilderController:
     # Helpers
     # ----------------------------------------------------------------------------------------------
 
+    def discover_cables(self, prefix: str = "/World") -> List[str]:
+        """Discover existing cable roots in the stage and import them."""
+        stage = self._require_stage()
+
+        seg_regex = re.compile(r"segment_(\d+)$")
+        found: List[str] = []
+
+        for prim in stage.Traverse():
+            if not prim or not prim.IsValid():
+                continue
+
+            path = prim.GetPath().pathString
+            if prefix and not path.startswith(prefix):
+                continue
+
+            # detect a cable root by having segment children
+            has_segment = False
+            for child in prim.GetChildren():
+                name = child.GetName()
+                if name in ("segment_start", "segment_end") or seg_regex.search(name):
+                    has_segment = True
+                    break
+
+            if not has_segment:
+                continue
+
+            if path not in self._cables:
+                try:
+                    self.import_cable(path)
+                    found.append(path)
+                except Exception:
+                    # ignore prims that look similar but aren't valid cables
+                    pass
+
+        return found
+
     def _ensure_parameter_defaults(self):
         """Fill in any missing attributes when hot-reloading older state."""
         for field in DEFAULT_PARAMS.__dataclass_fields__.keys():
