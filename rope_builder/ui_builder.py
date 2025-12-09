@@ -80,6 +80,7 @@ class UIBuilder:
         self._joint_slider_models = {}
         self._toggle_vis_btn = None
         self._fit_anchors_btn = None
+        self._add_handle_btn = None
         self._cable_name_model = ui.SimpleStringModel("cable")
         self._active_path_model = ui.SimpleStringModel("")
         # TreeView for discovered/known cables
@@ -190,6 +191,9 @@ class UIBuilder:
                     self._fit_anchors_btn = ui.Button(
                         "Fit rope to anchors", clicked_fn=self._on_fit_to_anchors, enabled=False
                     )
+                    self._add_handle_btn = ui.Button(
+                        "Add shape handle", clicked_fn=self._on_add_shape_handle, enabled=False
+                    )
 
                 ui.Label("Joint drive targets", style=get_style())
                 self._joint_frame = ui.Frame()
@@ -285,6 +289,8 @@ class UIBuilder:
         self._reset_joint_btn.enabled = active_exists
         if self._fit_anchors_btn:
             self._fit_anchors_btn.enabled = active_exists
+        if self._add_handle_btn:
+            self._add_handle_btn.enabled = active_exists
 
         # Global actions as soon as we have any cables, even if none is "active" yet.
         has_cables = bool(self._controller.list_cable_paths())
@@ -356,6 +362,8 @@ class UIBuilder:
         self._reset_joint_btn.enabled = True
         if self._fit_anchors_btn:
             self._fit_anchors_btn.enabled = True
+        if self._add_handle_btn:
+            self._add_handle_btn.enabled = True
         self._subscription_btn.enabled = True
         self._toggle_vis_btn.enabled = True
         self._refresh_subscription_btn()
@@ -379,6 +387,8 @@ class UIBuilder:
         self._toggle_vis_btn.enabled = active_exists
         if self._fit_anchors_btn:
             self._fit_anchors_btn.enabled = active_exists
+        if self._add_handle_btn:
+            self._add_handle_btn.enabled = active_exists
         self._active_path_model.set_value(self._controller.active_cable_path() or "")
         self._refresh_known_cables_label()
         self._refresh_active_tree()
@@ -404,6 +414,8 @@ class UIBuilder:
         self._reset_joint_btn.enabled = True
         if self._fit_anchors_btn:
             self._fit_anchors_btn.enabled = True
+        if self._add_handle_btn:
+            self._add_handle_btn.enabled = True
         self._subscription_btn.enabled = True
         self._toggle_vis_btn.enabled = True
         self._refresh_subscription_btn()
@@ -425,6 +437,8 @@ class UIBuilder:
         self._reset_joint_btn.enabled = True
         if self._fit_anchors_btn:
             self._fit_anchors_btn.enabled = True
+        if self._add_handle_btn:
+            self._add_handle_btn.enabled = True
         self._subscription_btn.enabled = True
         self._toggle_vis_btn.enabled = True
         self._refresh_subscription_btn()
@@ -528,6 +542,20 @@ class UIBuilder:
         # Show limit-related warning first in the status, when present.
         self._update_status(" ".join(messages), warn=warn)
 
+    def _on_add_shape_handle(self):
+        """Create a movable handle prim for shaping the active cable."""
+        if not self._controller.rope_exists():
+            self._update_status("Create or import a cable before adding shape handles.", warn=True)
+            return
+
+        try:
+            path = self._controller.create_shape_handle()
+        except Exception as exc:
+            self._update_status(str(exc), warn=True)
+            return
+
+        self._update_status(f"Shape handle created at {path}. Move it, then fit rope to anchors.", warn=False)
+
     def _on_toggle_visibility(self):
         paths = self._controller.list_cable_paths()
         if not paths:
@@ -570,6 +598,8 @@ class UIBuilder:
             self._reset_joint_btn.enabled = active_exists
             if self._fit_anchors_btn:
                 self._fit_anchors_btn.enabled = active_exists
+            if self._add_handle_btn:
+                self._add_handle_btn.enabled = active_exists
 
             # Global actions depend on having any cables at all.
             has_cables = bool(self._controller.list_cable_paths())
@@ -641,6 +671,8 @@ class UIBuilder:
             self._reset_joint_btn.enabled = active_exists
             if self._fit_anchors_btn:
                 self._fit_anchors_btn.enabled = active_exists
+            if self._add_handle_btn:
+                self._add_handle_btn.enabled = active_exists
             has_cables = bool(self._controller.list_cable_paths())
             if self._subscription_btn:
                 self._subscription_btn.enabled = has_cables

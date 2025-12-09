@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import carb
@@ -92,6 +92,7 @@ class CableState:
     anchor_start: str
     anchor_end: str
     anchors_follow_rope: bool = True
+    handle_paths: List[str] = field(default_factory=list)
     show_curve: bool = True
     update_subscription: Optional[Any] = None
     # Performance helpers
@@ -564,6 +565,51 @@ class RopeBuilderController:
                 if low <= 0.0 <= high:
                     self.set_joint_drive_target(idx, axis, 0.0, apply_pose=True)
 
+    def create_shape_handle(self, root_path: Optional[str] = None) -> str:
+        """Create a movable handle prim for shaping the rope between fixed anchors."""
+        state = self._get_state(root_path, require=True)
+        stage = self._require_stage()
+
+        # Default position: midpoint between anchor transforms, or cable root if anchors invalid.
+        pos = Gf.Vec3d(0.0, 0.0, 0.0)
+        start_pose = self._segment_frame(stage, state.anchor_start)
+        end_pose = self._segment_frame(stage, state.anchor_end)
+        if start_pose and end_pose:
+            pos = (start_pose[0] + end_pose[0]) * 0.5
+        else:
+            root_prim = stage.GetPrimAtPath(state.root_path)
+            if root_prim and root_prim.IsValid():
+                xf = UsdGeom.Xformable(root_prim)
+                m = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+                pos = Gf.Vec3d(m.ExtractTranslation())
+
+        # Choose a unique handle path under the cable root.
+        base_name = "handle"
+        index = len(getattr(state, "handle_paths", []))
+        candidate = f"{state.root_path}/{base_name}_{index:02d}"
+        suffix = index + 1
+        while stage.GetPrimAtPath(candidate).IsValid():
+            candidate = f"{state.root_path}/{base_name}_{suffix:02d}"
+            suffix += 1
+        handle_path = candidate
+
+        xform = UsdGeom.Xform.Define(stage, Sdf.Path(handle_path))
+        xf = UsdGeom.Xformable(xform.GetPrim())
+        xf.ClearXformOpOrder()
+        xf.AddTranslateOp().Set(Gf.Vec3f(pos))
+
+        # Optional small visual so the handle is easy to select.
+        try:
+            sphere_path = Sdf.Path(handle_path).AppendPath("visual")
+            sphere = UsdGeom.Sphere.Define(stage, sphere_path)
+            sphere.CreateRadiusAttr(0.01)
+        except Exception:
+            pass
+
+        state.handle_paths.append(handle_path)
+        carb.log_info(f"[RopeBuilder] Created shape handle at {handle_path}.")
+        return handle_path
+
     def get_joint_limit_violations(self, root_path: Optional[str] = None) -> Tuple[int, float]:
         """Return (num_axes_violating_limits, max_violation_deg) for the given or active cable."""
         state = self._get_state(root_path, require=False)
@@ -610,7 +656,8 @@ class RopeBuilderController:
             pass
 
         # Anchor prims are used as authoring handles: read their current world-space
-        # frames and build a smooth curve between them.
+        # frames and build a smooth curve between them, optionally passing through
+        # user-created shape handles.
         start_pose = self._segment_frame(stage, state.anchor_start)
         end_pose = self._segment_frame(stage, state.anchor_end)
         if not start_pose or not end_pose:
@@ -644,24 +691,74 @@ class RopeBuilderController:
         m0 = dir0 * tangent_scale
         m1 = dir1 * tangent_scale
 
-        def hermite_point(t: float) -> Gf.Vec3d:
-            t = max(0.0, min(1.0, float(t)))
+        # Collect control points: anchor start, any shape handles, anchor end.
+        ctrl_pts: List[Gf.Vec3d] = [p0]
+        for hpath in getattr(state, "handle_paths", []) or []:
+            prim = stage.GetPrimAtPath(hpath)
+            if not prim or not prim.IsValid():
+                continue
+            xf = UsdGeom.Xformable(prim)
+            m = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+            ctrl_pts.append(Gf.Vec3d(m.ExtractTranslation()))
+        ctrl_pts.append(p1)
+
+        # For Catmull-Rom, create extended endpoint samples to respect anchor tangents.
+        n_ctrl = len(ctrl_pts)
+        if n_ctrl < 2:
+            ctrl_pts = [p0, p1]
+            n_ctrl = 2
+
+        ext_pts: List[Gf.Vec3d] = [Gf.Vec3d(0.0)] * (n_ctrl + 2)
+        for i, p in enumerate(ctrl_pts):
+            ext_pts[i + 1] = p
+        ext_pts[0] = ctrl_pts[0] - dir0 * tangent_scale
+        ext_pts[-1] = ctrl_pts[-1] + dir1 * tangent_scale
+
+        num_segs = max(n_ctrl - 1, 1)
+
+        def catmull_point_and_tangent(u: float) -> Tuple[Gf.Vec3d, Gf.Vec3d]:
+            """Evaluate Catmull-Rom spline point and tangent for u in [0, 1]."""
+            if num_segs <= 0:
+                return Gf.Vec3d(ctrl_pts[0]), Gf.Vec3d(dir0)
+
+            u = max(0.0, min(1.0, float(u)))
+            s = u * float(num_segs)
+            seg = int(s)
+            if seg >= num_segs:
+                seg = num_segs - 1
+                t = 1.0
+            else:
+                t = s - float(seg)
+
+            i = seg  # local segment index between ctrl_pts[i] and ctrl_pts[i+1]
+            P0 = ext_pts[i]
+            P1 = ext_pts[i + 1]
+            P2 = ext_pts[i + 2]
+            P3 = ext_pts[i + 3]
+
             t2 = t * t
             t3 = t2 * t
-            h00 = 2.0 * t3 - 3.0 * t2 + 1.0
-            h10 = t3 - 2.0 * t2 + t
-            h01 = -2.0 * t3 + 3.0 * t2
-            h11 = t3 - t2
-            return (p0 * h00) + (m0 * h10) + (p1 * h01) + (m1 * h11)
 
-        def hermite_tangent(t: float) -> Gf.Vec3d:
-            t = max(0.0, min(1.0, float(t)))
-            t2 = t * t
-            dh00 = 6.0 * t2 - 6.0 * t
-            dh10 = 3.0 * t2 - 4.0 * t + 1.0
-            dh01 = -6.0 * t2 + 6.0 * t
-            dh11 = 3.0 * t2 - 2.0 * t
-            return (p0 * dh00) + (m0 * dh10) + (p1 * dh01) + (m1 * dh11)
+            # Standard Catmull-Rom position.
+            pos = 0.5 * (
+                (2.0 * P1)
+                + (-P0 + P2) * t
+                + (2.0 * P0 - 5.0 * P1 + 4.0 * P2 - P3) * t2
+                + (-P0 + 3.0 * P1 - 3.0 * P2 + P3) * t3
+            )
+
+            # Derivative for tangent.
+            dpos = 0.5 * (
+                (-P0 + P2)
+                + (2.0 * (2.0 * P0 - 5.0 * P1 + 4.0 * P2 - P3)) * t
+                + (3.0 * (-P0 + 3.0 * P1 - 3.0 * P2 + P3)) * t2
+            )
+
+            if dpos.GetLength() < 1e-6:
+                dpos = Gf.Vec3d(dir0)
+            else:
+                dpos.Normalize()
+            return pos, dpos
 
         # Sample the curve to approximate arc length for parameterization.
         num_samples = max(32, len(state.segment_paths) * 4)
@@ -673,7 +770,7 @@ class RopeBuilderController:
         length_accum = 0.0
         for i in range(num_samples):
             t = float(i) / float(max(num_samples - 1, 1))
-            pos = hermite_point(t)
+            pos, _ = catmull_point_and_tangent(t)
             ts.append(t)
             pts.append(pos)
             if last_pos is not None:
@@ -718,12 +815,7 @@ class RopeBuilderController:
                     alpha = (target_len - l0) / (l1 - l0)
                 t_val = ts[idx - 1] * (1.0 - alpha) + ts[idx] * alpha
 
-            pos = hermite_point(t_val)
-            tan = hermite_tangent(t_val)
-            if tan.GetLength() > 1e-6:
-                tan.Normalize()
-            else:
-                tan = dir0
+            pos, tan = catmull_point_and_tangent(t_val)
             return pos, tan
 
         # Lay out each segment center along the curve based on its relative length.
