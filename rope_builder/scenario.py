@@ -768,6 +768,25 @@ class RopeBuilderController:
         except Exception as exc:
             carb.log_warn(f"[RopeBuilder] Failed to infer joint targets after fitting to anchors: {exc}")
 
+        # Log joint limit violations and length mismatch to the console for quick inspection.
+        try:
+            num_viol, max_over = self.get_joint_limit_violations(state.root_path)
+        except Exception:
+            num_viol, max_over = 0, 0.0
+
+        if num_viol > 0:
+            carb.log_warn(
+                f"[RopeBuilder] Fit-to-anchors pose: {num_viol} joint axes exceed limits "
+                f"(max violation {max_over:.1f} deg) on cable {state.root_path}."
+            )
+
+        mismatch = abs(float(curve_len) - float(rope_len))
+        if mismatch > 1e-3:
+            carb.log_warn(
+                f"[RopeBuilder] Fit-to-anchors pose: anchor path length {float(curve_len):.3f} m "
+                f"differs from rope length {float(rope_len):.3f} m for cable {state.root_path}."
+            )
+
         return rope_len, curve_len
 
     # ----------------------------------------------------------------------------------------------
