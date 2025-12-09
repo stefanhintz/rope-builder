@@ -462,6 +462,18 @@ class UIBuilder:
 
         self._syncing_active_selection = True
         try:
+            # --- Clear selection BEFORE changing model contents to avoid out-of-range errors ---
+            if hasattr(self._active_items_model, "clear_selection"):
+                try:
+                    self._active_items_model.clear_selection()
+                except Exception:
+                    pass
+            if self._active_list_widget and hasattr(self._active_list_widget, "selection"):
+                try:
+                    self._active_list_widget.selection = []
+                except Exception:
+                    pass
+
             # Update model contents across Kit versions.
             if hasattr(self._active_items_model, "set_items"):
                 self._active_items_model.set_items(rows)
@@ -472,20 +484,16 @@ class UIBuilder:
                     if hasattr(self._active_items_model, "append_item"):
                         self._active_items_model.append_item(r)
 
+            # Enable/disable list depending on whether we have real cables.
             if self._active_list_widget and hasattr(self._active_list_widget, "enabled"):
                 self._active_list_widget.enabled = bool(paths)
 
-            # Clear selection first to avoid out-of-range errors.
-            if self._active_list_widget and hasattr(self._active_list_widget, "selection"):
-                try:
-                    self._active_list_widget.selection = []
-                except Exception:
-                    pass
-
-                if paths:
-                    active = self._controller.active_cable_path()
-                    if active in paths:
-                        idx = paths.index(active)
+            # Apply a safe selection ONLY if we have real paths.
+            if paths and self._active_list_widget and hasattr(self._active_list_widget, "selection"):
+                active = self._controller.active_cable_path()
+                if active in paths:
+                    idx = paths.index(active)
+                    if 0 <= idx < len(items):
                         self._active_list_widget.selection = [idx]
         finally:
             self._syncing_active_selection = False
