@@ -342,6 +342,35 @@ class RopeBuilderController:
     def curve_subscription_active(self) -> bool:
         state = self._get_state(require=False)
         return bool(state and state.update_subscription)
+    
+    def showing_curve_state(self) -> bool:
+        """Return current show_curve state for the 'global' UI toggle."""
+        paths = self.list_cable_paths()
+        if self._active_path and self._active_path in self._cables:
+            return self._cables[self._active_path].show_curve
+        if paths:
+            return self._cables[paths[0]].show_curve
+        return True  # default if none exist
+
+    def toggle_visibility_all(self) -> bool:
+        """Toggle spline/collision visibility for ALL known cables."""
+        paths = self.list_cable_paths()
+        if not paths:
+            # Nothing to toggle; keep default spline-visible state.
+            return True
+
+        current = self.showing_curve_state()
+        new_show_curve = not current
+
+        for rp in paths:
+            state = self._cables.get(rp)
+            if not state:
+                continue
+            state.show_curve = new_show_curve
+            self._apply_visibility_state(state)
+
+        return new_show_curve
+
 
     def toggle_visibility(self) -> bool:
         """Toggle between showing spline or collision capsules on the active cable."""

@@ -441,12 +441,15 @@ class UIBuilder:
                 model.set_value(clamped)
 
     def _on_toggle_visibility(self):
-        if not self._controller.rope_exists():
-            self._update_status("Create a cable before toggling visibility.", warn=True)
+        paths = self._controller.list_cable_paths()
+        if not paths:
+            self._update_status("Discover or create a cable before toggling visibility.", warn=True)
             return
-        show_curve = self._controller.toggle_visibility()
+
+        show_curve = self._controller.toggle_visibility_all()
         self._refresh_visibility_btn()
-        msg = "Showing spline (collisions hidden)." if show_curve else "Showing collisions (spline hidden)."
+        msg = "Showing spline (collisions hidden) for all cables." if show_curve else \
+              "Showing collisions (spline hidden) for all cables."
         self._update_status(msg, warn=False)
 
     def _refresh_known_cables_label(self):
@@ -614,9 +617,10 @@ class UIBuilder:
     def _refresh_visibility_btn(self):
         if not self._toggle_vis_btn:
             return
-        show_curve = self._controller.showing_curve()
-        self._toggle_vis_btn.text = "Show collisions" if show_curve else "Show spline"
-        self._toggle_vis_btn.enabled = self._controller.rope_exists()
+        has_cables = bool(self._controller.list_cable_paths())
+        show_curve = self._controller.showing_curve_state()
+        self._toggle_vis_btn.text = "Show collisions (all)" if show_curve else "Show spline (all)"
+        self._toggle_vis_btn.enabled = has_cables
 
     def _auto_attach_plugs(self):
         # Auto-attach when paths are present and a cable exists.
