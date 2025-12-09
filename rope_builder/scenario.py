@@ -732,7 +732,7 @@ class RopeBuilderController:
             for jp, axes in inferred.items():
                 state.joint_drive_targets[jp] = dict(axes)
         except Exception as exc:
-            carb.log_warn(f\"[RopeBuilder] Failed to infer joint targets after fitting to anchors: {exc}\")
+            carb.log_warn(f"[RopeBuilder] Failed to infer joint targets after fitting to anchors: {exc}")
 
         return rope_len, curve_len
 
