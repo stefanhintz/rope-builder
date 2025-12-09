@@ -352,23 +352,30 @@ class RopeBuilderController:
         state.plug_start_path = start_plug
         state.plug_end_path = end_plug
 
-        def create_fixed(anchor_path: str, plug_path: str, suffix: str) -> Optional[str]:
-            if not plug_path:
+        start_seg = state.segment_paths[0] if state.segment_paths else None
+        end_seg = state.segment_paths[-1] if state.segment_paths else None
+        start_len = state.segment_lengths[0] if state.segment_paths and state.segment_lengths else state.params.segment_length
+        end_len = state.segment_lengths[-1] if state.segment_paths and state.segment_lengths else state.params.segment_length
+        start_offset = -0.5 * start_len
+        end_offset = 0.5 * end_len
+
+        def create_fixed(segment_path: Optional[str], plug_path: str, suffix: str, offset: float) -> Optional[str]:
+            if not plug_path or not segment_path:
                 return None
-            anchor_prim = stage.GetPrimAtPath(anchor_path)
+            seg_prim = stage.GetPrimAtPath(segment_path)
             plug_prim = stage.GetPrimAtPath(plug_path)
-            if not anchor_prim or not anchor_prim.IsValid() or not plug_prim or not plug_prim.IsValid():
+            if not seg_prim or not seg_prim.IsValid() or not plug_prim or not plug_prim.IsValid():
                 return None
             joint_path = f"{state.root_path}/plug_joint_{suffix}"
             fixed = UsdPhysics.FixedJoint.Define(stage, joint_path)
-            fixed.CreateBody0Rel().SetTargets([anchor_path])
+            fixed.CreateBody0Rel().SetTargets([segment_path])
             fixed.CreateBody1Rel().SetTargets([plug_path])
-            fixed.CreateLocalPos0Attr(Gf.Vec3f(0.0, 0.0, 0.0))
+            fixed.CreateLocalPos0Attr(Gf.Vec3f(offset, 0.0, 0.0))
             fixed.CreateLocalPos1Attr(Gf.Vec3f(0.0, 0.0, 0.0))
             return joint_path
 
-        state.plug_joint_start = create_fixed(state.anchor_start, state.plug_start_path, "start")
-        state.plug_joint_end = create_fixed(state.anchor_end, state.plug_end_path, "end")
+        state.plug_joint_start = create_fixed(start_seg, state.plug_start_path, "start", start_offset)
+        state.plug_joint_end = create_fixed(end_seg, state.plug_end_path, "end", end_offset)
         self._update_anchors_and_plugs(state)
 
     def showing_curve(self) -> bool:
