@@ -606,8 +606,19 @@ class UIBuilder:
 
     def _refresh_length_labels(self):
         """Update original/current length labels for the active cable."""
+        original = 0.0
+        current = 0.0
+
         try:
-            original, current = self._controller.get_length_info()
+            # Prefer the active cable; if none is set yet but cables exist,
+            # fall back to the first known cable so the user still sees length info.
+            root_path = self._controller.active_cable_path()
+            if not root_path:
+                paths = self._controller.list_cable_paths()
+                root_path = paths[0] if paths else None
+
+            if root_path:
+                original, current = self._controller.get_length_info(root_path)
         except Exception:
             original, current = 0.0, 0.0
 
