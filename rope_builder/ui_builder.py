@@ -63,7 +63,7 @@ class _CableTreeModel(ui.AbstractItemModel):
         return False
 
 class UIBuilder:
-    """Creates the layout for the Rope Builder control window."""
+    """Creates the layout for the Cable Builder control window."""
 
     def __init__(self):
         self.frames = []
@@ -127,43 +127,15 @@ class UIBuilder:
         self._param_constraints = {}
 
         # ------------------------------------------------------------------
-        # 1) Cable creation / authoring controls
-        # ------------------------------------------------------------------
-        with CollapsableFrame("Cable Creation", collapsed=False):
-            with ui.VStack(style=get_style(), spacing=8, height=0):
-                ui.Label("Cable Parameters", style=get_style())
-                self._build_float_field("Length (m)", "length", min_value=0.1, step=0.05)
-                self._build_float_field("Radius (m)", "radius", min_value=0.001, step=0.001)
-                self._build_float_field("Spline extend (m)", "curve_extension", min_value=0.0, step=0.005)
-                self._build_segment_slider("Segments", "segment_count", min_value=2)
-                self._build_float_field("Total Mass (kg)", "mass", min_value=0.01, step=0.05)
-
-                ui.Separator(height=6)
-                ui.Label("Joint Limits (degrees)", style=get_style())
-                self._build_joint_limit_span_field()
-
-                ui.Separator(height=6)
-                ui.Label("Drive Settings", style=get_style())
-                self._build_float_field("Stiffness", "drive_stiffness", min_value=0.0, step=10.0)
-                self._build_float_field("Damping", "drive_damping", min_value=0.0, step=1.0)
-                self._build_float_field("Max Force", "drive_max_force", min_value=0.0, step=10.0)
-
-                ui.Separator(height=6)
-                with ui.HStack(height=0):
-                    ui.Label("Cable name", width=140, style=get_style())
-                    ui.StringField(model=self._cable_name_model)
-
-                with ui.HStack(height=0, spacing=8):
-                    self._create_btn = ui.Button("Create Cable", clicked_fn=self._on_create_rope)
-
-        # ------------------------------------------------------------------
-        # 2) Cable list / discovery
+        # 1) Cables
         # ------------------------------------------------------------------
         with CollapsableFrame("Cables", collapsed=False):
             with ui.VStack(style=get_style(), spacing=6, height=0):
                 with ui.HStack(height=0, spacing=8):
                     ui.Button("Discover cables", clicked_fn=self._on_discover_cables_button)
-                    self._delete_btn = ui.Button("Delete Cable", clicked_fn=self._on_delete_rope, enabled=True)
+                    self._delete_btn = ui.Button("Delete cable", clicked_fn=self._on_delete_rope, enabled=True)
+                ui.Label("Active cable", style=get_style())
+                ui.StringField(model=self._active_path_model, read_only=True)
                 self._active_tree_view = ui.TreeView(
                     self._active_tree_model,
                     root_visible=False,
@@ -176,36 +148,76 @@ class UIBuilder:
                 ui.Label("", word_wrap=True, model=self._known_cables_model)
 
         # ------------------------------------------------------------------
-        # 3) Active cable controls (joint drive targets)
+        # 2) Shaping (Anchors & Handles)
         # ------------------------------------------------------------------
-        with CollapsableFrame("Active Cable Controls", collapsed=False):
+        with CollapsableFrame("Shaping (Anchors & Handles)", collapsed=False):
             with ui.VStack(style=get_style(), spacing=8, height=0):
-                ui.Label("Active cable", style=get_style())
-                ui.StringField(model=self._active_path_model)
+                ui.Label("Anchors", style=get_style())
+                ui.Label(
+                    "Move the cable's start and end anchor Xforms under the prims you want to plug into. "
+                    "Then press 'Fit cable to anchors' to reposition all segments along a smooth curve that "
+                    "connects the anchors. Segment lengths are preserved and anchors stay fixed; joint limits "
+                    "may be exceeded when the requested pose is too tight.",
+                    word_wrap=True,
+                    style=get_style(),
+                )
 
                 with ui.HStack(height=0, spacing=8):
-                    # Global spline subscribe/unsubscribe for all cables.
-                    self._subscription_btn = ui.Button(
-                        "Subscribe splines (all)", clicked_fn=self._on_sync_all_splines_button, enabled=False
+                    self._fit_anchors_btn = ui.Button(
+                        "Fit cable to anchors", clicked_fn=self._on_fit_to_anchors, enabled=False
+                    )
+                    self._add_handle_btn = ui.Button(
+                        "Add shape handle", clicked_fn=self._on_add_shape_handle, enabled=False
                     )
                     self._toggle_vis_btn = ui.Button(
                         "Show collisions (all)", clicked_fn=self._on_toggle_visibility, enabled=False
                     )
-                    self._fit_anchors_btn = ui.Button(
-                        "Fit rope to anchors", clicked_fn=self._on_fit_to_anchors, enabled=False
-                    )
-                    self._add_handle_btn = ui.Button(
-                        "Add shape handle", clicked_fn=self._on_add_shape_handle, enabled=False
+
+        # ------------------------------------------------------------------
+        # 3) Cable Parameters (for new cables)
+        # ------------------------------------------------------------------
+        with CollapsableFrame("Cable Parameters", collapsed=False):
+            with ui.VStack(style=get_style(), spacing=8, height=0):
+                ui.Label("Cable parameters for new cables", style=get_style())
+                self._build_float_field("Length (m)", "length", min_value=0.1, step=0.05)
+                self._build_float_field("Radius (m)", "radius", min_value=0.001, step=0.001)
+                self._build_float_field("Spline extend (m)", "curve_extension", min_value=0.0, step=0.005)
+                self._build_segment_slider("Segments", "segment_count", min_value=2)
+                self._build_float_field("Total mass (kg)", "mass", min_value=0.01, step=0.05)
+
+                ui.Separator(height=6)
+                ui.Label("Joint limits (degrees)", style=get_style())
+                self._build_joint_limit_span_field()
+
+                ui.Separator(height=6)
+                ui.Label("Drive settings", style=get_style())
+                self._build_float_field("Stiffness", "drive_stiffness", min_value=0.0, step=10.0)
+                self._build_float_field("Damping", "drive_damping", min_value=0.0, step=1.0)
+                self._build_float_field("Max force", "drive_max_force", min_value=0.0, step=10.0)
+
+                ui.Separator(height=6)
+                with ui.HStack(height=0):
+                    ui.Label("Cable name", width=140, style=get_style())
+                    ui.StringField(model=self._cable_name_model)
+
+                with ui.HStack(height=0, spacing=8):
+                    self._create_btn = ui.Button("Create cable", clicked_fn=self._on_create_rope)
+
+        # ------------------------------------------------------------------
+        # 4) Joint Tuning (Advanced)
+        # ------------------------------------------------------------------
+        with CollapsableFrame("Joint tuning (advanced)", collapsed=True):
+            with ui.VStack(style=get_style(), spacing=8, height=0):
+                with ui.HStack(height=0, spacing=8):
+                    # Global spline subscribe/unsubscribe for all cables.
+                    self._subscription_btn = ui.Button(
+                        "Subscribe splines (all)", clicked_fn=self._on_sync_all_splines_button, enabled=False
                     )
 
                 ui.Label("Joint drive targets", style=get_style())
                 self._joint_frame = ui.Frame()
                 with self._joint_frame:
                     ui.Label("Select or create a cable to edit joint drive targets.", style=get_style())
-
-                ui.Separator(height=6)
-                ui.Label("Status:", style=get_style())
-                ui.Label("", word_wrap=True, model=self._status_model)
 
         self._reset_ui()
 
@@ -270,7 +282,7 @@ class UIBuilder:
         self._param_models["joint_limit_span"] = model
 
     def _on_discover_cables_button(self):
-        print("[RopeBuilder UI] Discover button clicked")
+        print("[CableBuilder UI] Discover button clicked")
         
         try:
             found = self._controller.discover_cables("/World")
@@ -502,7 +514,7 @@ class UIBuilder:
             return
 
         if not result:
-            self._update_status("Could not fit rope to anchors. Ensure anchors exist on this cable.", warn=True)
+            self._update_status("Could not fit cable to anchors. Ensure anchors exist on this cable.", warn=True)
             return
 
         rope_len, path_len = result
@@ -530,13 +542,13 @@ class UIBuilder:
 
         if mismatch > 1e-3:
             messages.append(
-                f"Anchor path length ({path_len:.3f} m) differs from rope length "
+                f"Anchor path length ({path_len:.3f} m) differs from cable length "
                 f"({rope_len:.3f} m). Pose approximated; segment limits may be exceeded."
             )
             warn = True
 
         if not messages:
-            messages.append("Rope pose fitted between anchors.")
+            messages.append("Cable pose fitted between anchors.")
 
         # Show limit-related warning first in the status, when present.
         self._update_status(" ".join(messages), warn=warn)
@@ -687,6 +699,8 @@ class UIBuilder:
             self._update_status(f"Active cable set to {path}.", warn=False)
 
     def _update_status(self, message: str, warn: bool):
+        # Status text model is kept for potential future use, but no longer
+        # displayed in the UI.
         prefix = "Warning: " if warn else ""
         self._status_model.set_value(f"{prefix}{message}")
 

@@ -13,6 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-EXTENSION_TITLE = "Rope Builder"
+EXTENSION_TITLE = "Cable Builder"
 
-EXTENSION_DESCRIPTION = "Building ropes and cables in Isaac Sim"
+EXTENSION_DESCRIPTION = "Building lightweight cables in Isaac Sim"

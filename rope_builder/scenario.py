@@ -579,7 +579,7 @@ class RopeBuilderController:
                     self.set_joint_drive_target(idx, axis, 0.0, apply_pose=True)
 
     def create_shape_handle(self, root_path: Optional[str] = None) -> str:
-        """Create a movable handle prim for shaping the rope between fixed anchors."""
+        """Create a movable handle prim for shaping the cable between fixed anchors."""
         state = self._get_state(root_path, require=True)
         stage = self._require_stage()
 
@@ -664,10 +664,10 @@ class RopeBuilderController:
                 img.MakeVisible() if visible else img.MakeInvisible()
 
     def fit_rope_to_anchors(self, root_path: Optional[str] = None) -> Optional[Tuple[float, float]]:
-        """Repose the rope along a geometric curve between anchors in edit mode.
+        """Repose the cable along a geometric curve between anchors in edit mode.
 
         This preserves per-segment lengths, ignores joint limits, and may introduce
-        error if the anchor path length does not match the rope length. The caller
+        error if the anchor path length does not match the cable length. The caller
         can use the returned (rope_length, path_length) to display a warning.
         """
         state = self._get_state(root_path, require=False)
@@ -676,7 +676,7 @@ class RopeBuilderController:
             return None
 
         # Switch to anchor-driven mode: anchors become user handles and stop
-        # being overwritten from rope tips.
+        # being overwritten from cable tips.
         try:
             state.anchors_follow_rope = False
         except Exception:
@@ -688,7 +688,7 @@ class RopeBuilderController:
         start_pose = self._segment_frame(stage, state.anchor_start)
         end_pose = self._segment_frame(stage, state.anchor_end)
         if not start_pose or not end_pose:
-            carb.log_warn("[RopeBuilder] Cannot fit rope: anchors not found or invalid.")
+            carb.log_warn("[RopeBuilder] Cannot fit cable: anchors not found or invalid.")
             return None
 
         p0, r0 = start_pose
@@ -697,7 +697,7 @@ class RopeBuilderController:
         seg_lengths = state.segment_lengths or [state.params.segment_length] * len(state.segment_paths)
         rope_len = float(sum(seg_lengths)) if seg_lengths else float(state.params.length)
         if rope_len <= 1e-6:
-            carb.log_warn("[RopeBuilder] Cannot fit rope: total rope length is zero.")
+            carb.log_warn("[RopeBuilder] Cannot fit cable: total cable length is zero.")
             return None
 
         # Tangent directions derived from anchor orientations (their +X axis).
@@ -928,9 +928,11 @@ class RopeBuilderController:
 
         mismatch = abs(float(curve_len) - float(rope_len))
         if mismatch > 1e-3:
+        mismatch = abs(float(curve_len) - float(rope_len))
+        if mismatch > 1e-3:
             carb.log_warn(
                 f"[RopeBuilder] Fit-to-anchors pose: anchor path length {float(curve_len):.3f} m "
-                f"differs from rope length {float(rope_len):.3f} m for cable {state.root_path}."
+                f"differs from cable length {float(rope_len):.3f} m for cable {state.root_path}."
             )
 
         return rope_len, curve_len
