@@ -153,17 +153,17 @@ class UIBuilder:
         with CollapsableFrame("Shaping (Anchors & Handles)", collapsed=False):
             with ui.VStack(style=get_style(), spacing=8, height=0):
                 ui.Label(
-                    "- Find the two built‑in cable anchors under each cable root ('anchor_start' and 'anchor_end').",
+                    "- Find the two anchors in the cable object ('anchor_start' and 'anchor_end').",
                     word_wrap=True,
                     style=get_style(),
                 )
                 ui.Label(
-                    "- Place plug meshes at these anchors and parent or rigidly join them to the segment start/end nulls.",
+                    "- Place plug meshes at these anchors and fix join them to the segment start/end nulls.",
                     word_wrap=True,
                     style=get_style(),
                 )
                 ui.Label(
-                    "- Move the anchors to their final connection points (sockets, devices, etc.).",
+                    "- Move the anchors (not plug meshes) to their final connection points (sockets, devices, etc.).",
                     word_wrap=True,
                     style=get_style(),
                 )
