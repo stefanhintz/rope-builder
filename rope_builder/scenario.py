@@ -854,25 +854,41 @@ class RopeBuilderController:
             # End segments: force exact alignment with anchor transforms so plugs
             # placed under anchors match the capsule orientation.
             if idx == 0:
-                center = p0 + dir0 * (seg_len * 0.5)
-                tangent = dir0
+                center_world = p0 + dir0 * (seg_len * 0.5)
+                tangent_world = dir0
             elif idx == last_index:
-                center = p1 - dir1 * (seg_len * 0.5)
-                tangent = dir1
+                center_world = p1 - dir1 * (seg_len * 0.5)
+                tangent_world = dir1
             else:
                 # Interior segments follow the smooth sampled curve.
                 mid_s = (cursor + 0.5 * seg_len) / rope_len
-                center, tangent = sample_pos_and_dir(mid_s)
+                center_world, tangent_world = sample_pos_and_dir(mid_s)
 
             prim = stage.GetPrimAtPath(seg_path)
             if prim and prim.IsValid():
                 xf = UsdGeom.Xformable(prim)
+
+                # Convert world-space center/orientation into the local space of the parent
+                # so moving the cable root does not introduce an offset.
+                parent = prim.GetParent()
+                parent_world = Gf.Matrix4d(1.0)
+                if parent and parent.IsValid():
+                    parent_xf = UsdGeom.Xformable(parent)
+                    parent_world = parent_xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+
+                inv_parent = parent_world.GetInverse()
+                local_pos = inv_parent.Transform(center_world)
+
+                # Desired world orientation: +X axis points along tangent_world.
+                world_rot = Gf.Rotation(Gf.Vec3d(1.0, 0.0, 0.0), tangent_world).GetQuat()
+                world_q = Gf.Quatd(world_rot.GetReal(), world_rot.GetImaginary())
+
+                parent_rot = parent_world.ExtractRotation().GetQuat()
+                local_q = parent_rot.GetInverse() * world_q
+
                 xf.ClearXformOpOrder()
-                xf.AddTranslateOp().Set(Gf.Vec3f(center))
-                # Orient segment so its +X axis follows the curve tangent.
-                rot = Gf.Rotation(Gf.Vec3d(1.0, 0.0, 0.0), tangent).GetQuat()
-                qd = Gf.Quatd(rot.GetReal(), rot.GetImaginary())
-                qf = Gf.Quatf(float(qd.GetReal()), Gf.Vec3f(qd.GetImaginary()))
+                xf.AddTranslateOp().Set(Gf.Vec3f(local_pos))
+                qf = Gf.Quatf(float(local_q.GetReal()), Gf.Vec3f(local_q.GetImaginary()))
                 xf.AddOrientOp().Set(qf)
                 xf.AddScaleOp().Set(Gf.Vec3f(1.0, 1.0, 1.0))
 
