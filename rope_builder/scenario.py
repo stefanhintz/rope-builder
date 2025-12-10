@@ -928,8 +928,6 @@ class RopeBuilderController:
 
         mismatch = abs(float(curve_len) - float(rope_len))
         if mismatch > 1e-3:
-        mismatch = abs(float(curve_len) - float(rope_len))
-        if mismatch > 1e-3:
             carb.log_warn(
                 f"[RopeBuilder] Fit-to-anchors pose: anchor path length {float(curve_len):.3f} m "
                 f"differs from cable length {float(rope_len):.3f} m for cable {state.root_path}."
