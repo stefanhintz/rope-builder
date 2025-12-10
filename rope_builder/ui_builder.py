@@ -153,27 +153,45 @@ class UIBuilder:
         with CollapsableFrame("Shaping (Anchors & Handles)", collapsed=False):
             with ui.VStack(style=get_style(), spacing=8, height=0):
                 ui.Label(
-                    "Each cable has two internal anchors at its ends. Place these anchors under the prims where "
-                    "the cable should connect (for example sockets or device ports), then press 'Fit cable to anchors' "
-                    "to reposition all segments along a smooth curve between those points. You can add shape handles "
-                    "to sculpt the cable path, and use 'Show collisions' to visualize the collision capsules so you "
-                    "can check for clearance before starting simulation. Keep an eye on the cable length vs. the "
-                    "current fitted path as a first indicator of whether the cable is stretched or compressed. Plug "
-                    "meshes can also be placed at the anchor locations and then rigidly joined to the segment start/end "
-                    "null objects to form a complete, properly aligned cable + plug assembly.",
+                    "- Find the two built‑in cable anchors under each cable root ('anchor_start' and 'anchor_end').",
+                    word_wrap=True,
+                    style=get_style(),
+                )
+                ui.Label(
+                    "- Place plug meshes at these anchors and parent or rigidly join them to the segment start/end nulls.",
+                    word_wrap=True,
+                    style=get_style(),
+                )
+                ui.Label(
+                    "- Move the anchors to their final connection points (sockets, devices, etc.).",
+                    word_wrap=True,
+                    style=get_style(),
+                )
+                ui.Label(
+                    "- Press 'Fit cable' to align the cable between the anchors.",
+                    word_wrap=True,
+                    style=get_style(),
+                )
+                ui.Label(
+                    "- Add shape handles to sculpt the path and press 'Fit cable' again.",
+                    word_wrap=True,
+                    style=get_style(),
+                )
+                ui.Label(
+                    "- Watch 'Cable length' (original vs current) and the collision meshes so the cable is not overstretched or colliding.",
                     word_wrap=True,
                     style=get_style(),
                 )
 
                 with ui.HStack(height=0, spacing=8):
                     self._fit_anchors_btn = ui.Button(
-                        "Fit cable to anchors", clicked_fn=self._on_fit_to_anchors, enabled=False
+                        "Fit cable", clicked_fn=self._on_fit_to_anchors, enabled=False
                     )
                     self._add_handle_btn = ui.Button(
                         "Add shape handle", clicked_fn=self._on_add_shape_handle, enabled=False
                     )
                     self._toggle_vis_btn = ui.Button(
-                        "Show collisions (all)", clicked_fn=self._on_toggle_visibility, enabled=False
+                        "Show collisions", clicked_fn=self._on_toggle_visibility, enabled=False
                     )
 
                 ui.Separator(height=6)
@@ -581,7 +599,7 @@ class UIBuilder:
             self._update_status(str(exc), warn=True)
             return
 
-        self._update_status(f"Shape handle created at {path}. Move it, then fit cable to anchors.", warn=False)
+        self._update_status(f"Shape handle created at {path}. Move it, then fit cable.", warn=False)
 
     def _on_toggle_visibility(self):
         paths = self._controller.list_cable_paths()
@@ -591,8 +609,8 @@ class UIBuilder:
 
         show_curve = self._controller.toggle_visibility_all()
         self._refresh_visibility_btn()
-        msg = "Showing spline (collisions hidden) for all cables." if show_curve else \
-              "Showing collisions (spline hidden) for all cables."
+        msg = "Showing mesh (collisions hidden) for all cables." if show_curve else \
+              "Showing collisions (mesh hidden) for all cables."
         self._update_status(msg, warn=False)
 
     def _refresh_known_cables_label(self):
@@ -826,7 +844,7 @@ class UIBuilder:
         subscribed_any = self._controller.any_curve_subscription_active()
 
         self._subscription_btn.text = (
-            "Unsubscribe splines (all)" if subscribed_any else "Subscribe splines (all)"
+            "Unsubscribe splines" if subscribed_any else "Subscribe splines"
         )
         self._subscription_btn.enabled = has_cables
 
@@ -835,7 +853,7 @@ class UIBuilder:
             return
         has_cables = bool(self._controller.list_cable_paths())
         show_curve = self._controller.showing_curve_state()
-        self._toggle_vis_btn.text = "Show collisions (all)" if show_curve else "Show spline (all)"
+        self._toggle_vis_btn.text = "Show collisions" if show_curve else "Show mesh"
         self._toggle_vis_btn.enabled = has_cables
 
     def _on_sync_all_splines_button(self):
