@@ -1335,9 +1335,24 @@ class RopeBuilderController:
         if not prim or not prim.IsValid():
             return
         xf = UsdGeom.Xformable(prim)
+
+        # Convert desired world-space transform into the local space of the parent
+        # so anchors remain glued to rope tips even when the cable root moves.
+        parent = prim.GetParent()
+        parent_world = Gf.Matrix4d(1.0)
+        if parent and parent.IsValid():
+            parent_xf = UsdGeom.Xformable(parent)
+            parent_world = parent_xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+
+        inv_parent = parent_world.GetInverse()
+        local_pos = inv_parent.Transform(pos)
+
+        parent_rot = parent_world.ExtractRotation().GetQuat()
+        local_rot = parent_rot.GetInverse() * rot
+
         xf.ClearXformOpOrder()
-        xf.AddTranslateOp().Set(Gf.Vec3f(pos))
-        qf = Gf.Quatf(float(rot.GetReal()), Gf.Vec3f(rot.GetImaginary()))
+        xf.AddTranslateOp().Set(Gf.Vec3f(local_pos))
+        qf = Gf.Quatf(float(local_rot.GetReal()), Gf.Vec3f(local_rot.GetImaginary()))
         xf.AddOrientOp().Set(qf)
 
 
