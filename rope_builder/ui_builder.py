@@ -180,9 +180,9 @@ class UIBuilder:
                 ui.Label("Cable length", style=get_style())
                 with ui.HStack(height=0, spacing=12):
                     ui.Label("Original:", width=80, style=get_style())
-                    ui.Label(model=self._orig_length_model, style=get_style())
+                    ui.Label("-", model=self._orig_length_model, style=get_style())
                     ui.Label("Current path:", width=100, style=get_style())
-                    ui.Label(model=self._current_length_model, style=get_style())
+                    ui.Label("-", model=self._current_length_model, style=get_style())
 
         # ------------------------------------------------------------------
         # 3) Cable Parameters (for new cables)
