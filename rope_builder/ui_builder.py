@@ -136,8 +136,6 @@ class UIBuilder:
                 with ui.HStack(height=0, spacing=8):
                     ui.Button("Discover cables", clicked_fn=self._on_discover_cables_button)
                     self._delete_btn = ui.Button("Delete cable", clicked_fn=self._on_delete_rope, enabled=True)
-                ui.Label("Active cable", style=get_style())
-                ui.StringField(model=self._active_path_model, read_only=True)
                 self._active_tree_view = ui.TreeView(
                     self._active_tree_model,
                     root_visible=False,
@@ -154,7 +152,6 @@ class UIBuilder:
         # ------------------------------------------------------------------
         with CollapsableFrame("Shaping (Anchors & Handles)", collapsed=False):
             with ui.VStack(style=get_style(), spacing=8, height=0):
-                ui.Label("Anchors", style=get_style())
                 ui.Label(
                     "Each cable has two internal anchors at its ends. Place these anchors under the prims where "
                     "the cable should connect (for example sockets or device ports), then press 'Fit cable to anchors' "
@@ -190,9 +187,9 @@ class UIBuilder:
         # ------------------------------------------------------------------
         # 3) Cable Parameters (for new cables)
         # ------------------------------------------------------------------
-        with CollapsableFrame("Cable Parameters", collapsed=False):
+        with CollapsableFrame("Create new cable", collapsed=True):
             with ui.VStack(style=get_style(), spacing=8, height=0):
-                ui.Label("Cable parameters for new cables", style=get_style())
+                ui.Label("Parameters for new cables", style=get_style())
                 self._build_float_field("Length (m)", "length", min_value=0.1, step=0.05)
                 self._build_float_field("Radius (m)", "radius", min_value=0.001, step=0.001)
                 self._build_float_field("Spline extend (m)", "curve_extension", min_value=0.0, step=0.005)
@@ -323,6 +320,7 @@ class UIBuilder:
         # Automatically subscribe spline updates for all discovered cables.
         if self._controller.list_cable_paths():
             self._controller.start_curve_updates_all()
+            self._refresh_length_labels()
 
         # Global actions as soon as we have any cables, even if none is "active" yet.
         has_cables = bool(self._controller.list_cable_paths())
