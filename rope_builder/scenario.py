@@ -92,6 +92,8 @@ class CableState:
     anchor_start: str
     anchor_end: str
     anchors_follow_rope: bool = True
+    original_length: float = 0.0
+    current_path_length: float = 0.0
     handle_paths: List[str] = field(default_factory=list)
     show_curve: bool = True
     update_subscription: Optional[Any] = None
@@ -195,6 +197,8 @@ class RopeBuilderController:
             root_path=root_path,
             curve_path=curve_path,
             params=params,
+             original_length=float(params.length),
+             current_path_length=float(params.length),
             segment_lengths=[length for _, length in segment_plan],
             segment_paths=segment_paths,
             joint_paths=joint_paths,
@@ -363,6 +367,8 @@ class RopeBuilderController:
             root_path=root_path,
             curve_path=curve_path,
             params=params,
+            original_length=float(params.length),
+            current_path_length=float(params.length),
             segment_lengths=seg_lengths,
             segment_paths=segment_paths,
             joint_paths=joint_paths,
@@ -649,6 +655,13 @@ class RopeBuilderController:
                         max_over = over
         return count, max_over
 
+    def get_length_info(self, root_path: Optional[str] = None) -> Tuple[float, float]:
+        """Return (original_length, current_path_length) for the given or active cable."""
+        state = self._get_state(root_path, require=False)
+        if not state:
+            return 0.0, 0.0
+        return float(getattr(state, "original_length", 0.0)), float(getattr(state, "current_path_length", 0.0))
+
     def set_shape_handles_visible_all(self, visible: bool):
         """Show or hide all known shape handles across all cables."""
         stage = self._usd_context.get_stage()
@@ -914,24 +927,9 @@ class RopeBuilderController:
         except Exception as exc:
             carb.log_warn(f"[RopeBuilder] Failed to infer joint targets after fitting to anchors: {exc}")
 
-        # Log joint limit violations and length mismatch to the console for quick inspection.
-        try:
-            num_viol, max_over = self.get_joint_limit_violations(state.root_path)
-        except Exception:
-            num_viol, max_over = 0, 0.0
-
-        if num_viol > 0:
-            carb.log_warn(
-                f"[RopeBuilder] Fit-to-anchors pose: {num_viol} joint axes exceed limits "
-                f"(max violation {max_over:.1f} deg) on cable {state.root_path}."
-            )
-
-        mismatch = abs(float(curve_len) - float(rope_len))
-        if mismatch > 1e-3:
-            carb.log_warn(
-                f"[RopeBuilder] Fit-to-anchors pose: anchor path length {float(curve_len):.3f} m "
-                f"differs from cable length {float(rope_len):.3f} m for cable {state.root_path}."
-            )
+        # Store length info for UI (original is the designed cable length; current is the fitted path length).
+        state.original_length = float(rope_len)
+        state.current_path_length = float(curve_len)
 
         return rope_len, curve_len
 

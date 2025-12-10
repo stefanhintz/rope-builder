@@ -90,6 +90,8 @@ class UIBuilder:
         self._known_cables_model = ui.SimpleStringModel("No cables yet.")
         self._syncing_joint_build = False
         self._joint_limit_hint_model = ui.SimpleStringModel("")
+        self._orig_length_model = ui.SimpleStringModel("-")
+        self._current_length_model = ui.SimpleStringModel("-")
 
     ###################################################################################
     #           The Functions Below Are Called Automatically By extension.py
@@ -154,10 +156,14 @@ class UIBuilder:
             with ui.VStack(style=get_style(), spacing=8, height=0):
                 ui.Label("Anchors", style=get_style())
                 ui.Label(
-                    "Move the cable's start and end anchor Xforms under the prims you want to plug into. "
-                    "Then press 'Fit cable to anchors' to reposition all segments along a smooth curve that "
-                    "connects the anchors. Segment lengths are preserved and anchors stay fixed; joint limits "
-                    "may be exceeded when the requested pose is too tight.",
+                    "Each cable has two internal anchors at its ends. Place these anchors under the prims where "
+                    "the cable should connect (for example sockets or device ports), then press 'Fit cable to anchors' "
+                    "to reposition all segments along a smooth curve between those points. You can add shape handles "
+                    "to sculpt the cable path, and use 'Show collisions' to visualize the collision capsules so you "
+                    "can check for clearance before starting simulation. Keep an eye on the cable length vs. the "
+                    "current fitted path as a first indicator of whether the cable is stretched or compressed. Plug "
+                    "meshes can also be placed at the anchor locations and then rigidly joined to the segment start/end "
+                    "null objects to form a complete, properly aligned cable + plug assembly.",
                     word_wrap=True,
                     style=get_style(),
                 )
@@ -172,6 +178,14 @@ class UIBuilder:
                     self._toggle_vis_btn = ui.Button(
                         "Show collisions (all)", clicked_fn=self._on_toggle_visibility, enabled=False
                     )
+
+                ui.Separator(height=6)
+                ui.Label("Cable length", style=get_style())
+                with ui.HStack(height=0, spacing=12):
+                    ui.Label("Original:", width=80, style=get_style())
+                    ui.Label("", model=self._orig_length_model, style=get_style())
+                    ui.Label("Current path:", width=100, style=get_style())
+                    ui.Label("", model=self._current_length_model, style=get_style())
 
         # ------------------------------------------------------------------
         # 3) Cable Parameters (for new cables)
@@ -389,6 +403,7 @@ class UIBuilder:
         self._refresh_subscription_btn()
         self._refresh_visibility_btn()
         self._build_joint_controls()
+        self._refresh_length_labels()
         self._update_status(f"Cable prims initialized at {prim_path}.", warn=False)
 
     def _on_delete_rope(self):
@@ -417,6 +432,7 @@ class UIBuilder:
             self._build_joint_controls()
         else:
             self._clear_joint_controls()
+        self._refresh_length_labels()
         self._update_status(f"Deleted cable at {path}.", warn=False)
 
     def _on_import_rope(self):
@@ -442,6 +458,7 @@ class UIBuilder:
         self._refresh_subscription_btn()
         self._refresh_visibility_btn()
         self._build_joint_controls()
+        self._refresh_length_labels()
         self._update_status(f"Imported cable at {prim_path}.", warn=False)
 
     def _on_set_active_cable(self):
@@ -522,6 +539,7 @@ class UIBuilder:
         # Rebuild joint controls so sliders reflect the updated pose, but do not
         # re-seed controller targets from local offsets (which would re-pose).
         self._build_joint_controls(seed_from_offsets=False)
+        self._refresh_length_labels()
 
         # First, report any joint limit violations based on the fitted pose.
         try:
@@ -565,7 +583,7 @@ class UIBuilder:
             self._update_status(str(exc), warn=True)
             return
 
-        self._update_status(f"Shape handle created at {path}. Move it, then fit rope to anchors.", warn=False)
+        self._update_status(f"Shape handle created at {path}. Move it, then fit cable to anchors.", warn=False)
 
     def _on_toggle_visibility(self):
         paths = self._controller.list_cable_paths()
@@ -587,6 +605,23 @@ class UIBuilder:
             active = self._controller.active_cable_path()
             text = "Known cables: " + ", ".join([p + ("*" if p == active else "") for p in paths])
             self._known_cables_model.set_value(text)
+
+    def _refresh_length_labels(self):
+        """Update original/current length labels for the active cable."""
+        try:
+            original, current = self._controller.get_length_info()
+        except Exception:
+            original, current = 0.0, 0.0
+
+        if original > 0.0:
+            self._orig_length_model.set_value(f"{original:.3f} m")
+        else:
+            self._orig_length_model.set_value("-")
+
+        if current > 0.0:
+            self._current_length_model.set_value(f"{current:.3f} m")
+        else:
+            self._current_length_model.set_value("-")
 
     def _reset_ui(self):
         params = self._controller.parameters
@@ -629,6 +664,7 @@ class UIBuilder:
         self._refresh_subscription_btn()
         self._refresh_visibility_btn()
         self._build_joint_controls()
+        self._refresh_length_labels()
         self._update_status("Ready to create a cable.", warn=False)
 
     def _refresh_active_tree(self):
@@ -696,6 +732,7 @@ class UIBuilder:
             self._refresh_subscription_btn()
             self._refresh_visibility_btn()
             self._build_joint_controls()
+            self._refresh_length_labels()
             self._update_status(f"Active cable set to {path}.", warn=False)
 
     def _update_status(self, message: str, warn: bool):
