@@ -860,14 +860,6 @@ class UIBuilder:
                                                 init_val = float(euler[2])
                                                 used_offset = True
 
-                                    # Seed controller targets from local offsets so editing one joint
-                                    # doesn't implicitly zero others.
-                                    if seed_from_offsets and used_offset:
-                                        try:
-                                            self._controller.set_joint_drive_target(idx, axis, init_val, apply_pose=True)
-                                        except Exception:
-                                            pass
-
                                     model = ui.SimpleFloatModel(init_val)
                                     model.add_value_changed_fn(
                                         lambda m, i=idx, ax=axis: self._on_joint_slider_changed(i, ax, m.as_float)
