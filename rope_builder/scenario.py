@@ -389,8 +389,31 @@ class RopeBuilderController:
         self._define_anchor(stage, anchor_end)
         self._update_anchors(state)
         self._apply_visibility_state(state)
+        self._ensure_end_tip_prims(stage, state)
         carb.log_info(f"[RopeBuilder] Imported cable at {root_path}.")
         return root_path
+
+    def _ensure_end_tip_prims(self, stage, state: CableState):
+        """Ensure segment_start/tip and segment_end/tip exist for plug attachment."""
+        if not state.segment_paths:
+            return
+        seg_lengths = state.segment_lengths or [state.params.segment_length] * len(state.segment_paths)
+
+        # Start segment tip at local -X end.
+        start_seg = state.segment_paths[0]
+        start_len = seg_lengths[0] if seg_lengths else state.params.segment_length
+        start_tip = Sdf.Path(start_seg).AppendPath("tip")
+        if not stage.GetPrimAtPath(start_tip).IsValid():
+            tip = UsdGeom.Xform.Define(stage, start_tip)
+            tip.AddTranslateOp().Set(Gf.Vec3f(-0.5 * float(start_len), 0.0, 0.0))
+
+        # End segment tip at local +X end.
+        end_seg = state.segment_paths[-1]
+        end_len = seg_lengths[-1] if seg_lengths else state.params.segment_length
+        end_tip = Sdf.Path(end_seg).AppendPath("tip")
+        if not stage.GetPrimAtPath(end_tip).IsValid():
+            tip = UsdGeom.Xform.Define(stage, end_tip)
+            tip.AddTranslateOp().Set(Gf.Vec3f(0.5 * float(end_len), 0.0, 0.0))
 
     def delete_rope(self, root_path: Optional[str] = None):
         """Remove a cable from the stage and controller."""
@@ -721,7 +744,14 @@ class RopeBuilderController:
         if dir1.GetLength() < 1e-6:
             dir1 = Gf.Vec3d(1.0, 0.0, 0.0)
 
-        delta = p1 - p0
+        # Align end segments exactly to anchor transforms. The interior curve is fit
+        # between the inner tips (end of first segment, start of last segment).
+        start_len = float(seg_lengths[0]) if seg_lengths else 0.0
+        end_len = float(seg_lengths[-1]) if seg_lengths else 0.0
+        inner_p0 = p0 + dir0 * start_len
+        inner_p1 = p1 - dir1 * end_len
+
+        delta = inner_p1 - inner_p0
         straight_dist = delta.GetLength()
         # Choose a tangent magnitude that gives a gentle arc; fall back to rope_len
         # for nearly coincident anchors.
@@ -731,8 +761,9 @@ class RopeBuilderController:
         m0 = dir0 * tangent_scale
         m1 = dir1 * tangent_scale
 
-        # Collect control points: anchor start, any shape handles, anchor end.
-        ctrl_pts: List[Gf.Vec3d] = [p0]
+        # Collect control points for the interior curve: inner-start tip, any shape
+        # handles, inner-end tip.
+        ctrl_pts: List[Gf.Vec3d] = [inner_p0]
         for hpath in getattr(state, "handle_paths", []) or []:
             prim = stage.GetPrimAtPath(hpath)
             if not prim or not prim.IsValid():
@@ -740,12 +771,12 @@ class RopeBuilderController:
             xf = UsdGeom.Xformable(prim)
             m = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
             ctrl_pts.append(Gf.Vec3d(m.ExtractTranslation()))
-        ctrl_pts.append(p1)
+        ctrl_pts.append(inner_p1)
 
         # For Catmull-Rom, create extended endpoint samples to respect anchor tangents.
         n_ctrl = len(ctrl_pts)
         if n_ctrl < 2:
-            ctrl_pts = [p0, p1]
+            ctrl_pts = [inner_p0, inner_p1]
             n_ctrl = 2
 
         ext_pts: List[Gf.Vec3d] = [Gf.Vec3d(0.0)] * (n_ctrl + 2)
@@ -828,7 +859,7 @@ class RopeBuilderController:
             """Return a point and approximate tangent direction at normalized arc-length s."""
             s_clamped = max(0.0, min(1.0, float(s)))
             if use_straight or curve_len <= 1e-6:
-                pos = p0 + delta * s_clamped
+                pos = inner_p0 + delta * s_clamped
                 d = Gf.Vec3d(delta)
                 if d.GetLength() < 1e-6:
                     d = dir0
@@ -858,23 +889,33 @@ class RopeBuilderController:
             pos, tan = catmull_point_and_tangent(t_val)
             return pos, tan
 
-        # Lay out each segment center along the curve based on its relative length.
-        cursor = 0.0
+        # Lay out segments:
+        # - End segments match anchors exactly (for plug alignment).
+        # - Interior segments follow the sampled interior curve.
+        mid_rope_len = float(rope_len - start_len - end_len)
+        cursor_mid = 0.0
         last_index = len(state.segment_paths) - 1
         for idx, seg_path in enumerate(state.segment_paths):
             seg_len = seg_lengths[idx] if idx < len(seg_lengths) else state.params.segment_length
 
+            desired_world_q: Optional[Gf.Quatd] = None
+
             # End segments: force exact alignment with anchor transforms so plugs
-            # placed under anchors match the capsule orientation.
+            # parented under segment_start/tip and segment_end/tip match orientation.
             if idx == 0:
                 center_world = p0 + dir0 * (seg_len * 0.5)
                 tangent_world = dir0
+                desired_world_q = r0
             elif idx == last_index:
                 center_world = p1 - dir1 * (seg_len * 0.5)
                 tangent_world = dir1
+                desired_world_q = r1
             else:
                 # Interior segments follow the smooth sampled curve.
-                mid_s = (cursor + 0.5 * seg_len) / rope_len
+                if mid_rope_len <= 1e-6:
+                    mid_s = 0.5
+                else:
+                    mid_s = (cursor_mid + 0.5 * float(seg_len)) / mid_rope_len
                 center_world, tangent_world = sample_pos_and_dir(mid_s)
 
             prim = stage.GetPrimAtPath(seg_path)
@@ -892,12 +933,13 @@ class RopeBuilderController:
                 inv_parent = parent_world.GetInverse()
                 local_pos = inv_parent.Transform(center_world)
 
-                # Desired world orientation: +X axis points along tangent_world.
-                world_rot = Gf.Rotation(Gf.Vec3d(1.0, 0.0, 0.0), tangent_world).GetQuat()
-                world_q = Gf.Quatd(world_rot.GetReal(), world_rot.GetImaginary())
+                if desired_world_q is None:
+                    # Interior segments: +X axis points along tangent_world.
+                    world_rot = Gf.Rotation(Gf.Vec3d(1.0, 0.0, 0.0), tangent_world).GetQuat()
+                    desired_world_q = Gf.Quatd(world_rot.GetReal(), world_rot.GetImaginary())
 
                 parent_rot = parent_world.ExtractRotation().GetQuat()
-                local_q = parent_rot.GetInverse() * world_q
+                local_q = parent_rot.GetInverse() * desired_world_q
 
                 xf.ClearXformOpOrder()
                 xf.AddTranslateOp().Set(Gf.Vec3f(local_pos))
@@ -905,7 +947,8 @@ class RopeBuilderController:
                 xf.AddOrientOp().Set(qf)
                 xf.AddScaleOp().Set(Gf.Vec3f(1.0, 1.0, 1.0))
 
-            cursor += seg_len
+            if idx != 0 and idx != last_index:
+                cursor_mid += float(seg_len)
 
         # Update spline points from new segment poses, but keep anchors as user-authored
         # handles (do not overwrite them from segment endpoints here).
@@ -928,10 +971,11 @@ class RopeBuilderController:
             carb.log_warn(f"[RopeBuilder] Failed to infer joint targets after fitting to anchors: {exc}")
 
         # Store length info for UI (original is the designed cable length; current is the fitted path length).
+        path_len = float(start_len + curve_len + end_len)
         state.original_length = float(rope_len)
-        state.current_path_length = float(curve_len)
+        state.current_path_length = path_len
 
-        return rope_len, curve_len
+        return rope_len, path_len
 
     # ----------------------------------------------------------------------------------------------
     # Helpers
@@ -1063,6 +1107,16 @@ class RopeBuilderController:
         collision.CreateAxisAttr(UsdGeom.Tokens.x)
         UsdPhysics.CollisionAPI.Apply(collision.GetPrim())
         UsdGeom.Imageable(collision.GetPrim()).MakeInvisible()
+
+        # End-of-cable attachment points for plug meshes.
+        # Users can parent plug meshes (and collider-only plug geometry) under these tips
+        # so plugs move with the end segment rigid bodies without adding extra constraints.
+        if name in ("segment_start", "segment_end"):
+            tip_path = segment_path.AppendPath("tip")
+            if not stage.GetPrimAtPath(tip_path).IsValid():
+                tip = UsdGeom.Xform.Define(stage, tip_path)
+                local_x = (-0.5 * seg_len) if name == "segment_start" else (0.5 * seg_len)
+                tip.AddTranslateOp().Set(Gf.Vec3f(local_x, 0.0, 0.0))
 
         return str(segment_path)
 

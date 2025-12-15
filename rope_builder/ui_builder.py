@@ -158,7 +158,7 @@ class UIBuilder:
                     style=get_style(),
                 )
                 ui.Label(
-                    "- Place plug meshes at these anchors and fix join them to the segment start/end nulls.",
+                    "- Place plug meshes under 'segment_start/tip' and 'segment_end/tip' (avoid fixed joints; keep plugs collider-only).",
                     word_wrap=True,
                     style=get_style(),
                 )
