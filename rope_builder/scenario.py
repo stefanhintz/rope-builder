@@ -1272,10 +1272,14 @@ class RopeBuilderController:
         curve_prim = UsdGeom.BasisCurves.Get(stage, Sdf.Path(state.curve_path))
         if not curve_prim:
             curve_prim = UsdGeom.BasisCurves.Define(stage, Sdf.Path(state.curve_path)).GetPrim()
-            curves = UsdGeom.BasisCurves(curve_prim)
-            curves.CreateTypeAttr("cubic")
-            curves.CreateBasisAttr("catmullRom")
-            curves.CreateWrapAttr("pinned")
+        curves = UsdGeom.BasisCurves(curve_prim)
+        type_attr = curves.GetTypeAttr() or curves.CreateTypeAttr()
+        basis_attr = curves.GetBasisAttr() or curves.CreateBasisAttr()
+        wrap_attr = curves.GetWrapAttr() or curves.CreateWrapAttr()
+
+        type_attr.Set(UsdGeom.Tokens.cubic)
+        basis_attr.Set(UsdGeom.Tokens.bspline)
+        wrap_attr.Set(UsdGeom.Tokens.pinned)
         width = max(state.params.radius * state.params.curve_width_scale, 1e-4)
         UsdGeom.BasisCurves(curve_prim).CreateWidthsAttr(Vt.FloatArray([width]))
         return curve_prim
