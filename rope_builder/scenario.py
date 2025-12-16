@@ -757,11 +757,43 @@ class RopeBuilderController:
             dir1 = Gf.Vec3d(1.0, 0.0, 0.0)
 
         # Align end segments exactly to anchor transforms. The interior curve is fit
-        # between the inner tips (end of first segment, start of last segment).
+        # between the inner ends of the end segments (i.e. the first/last joints).
         start_len = float(seg_lengths[0]) if seg_lengths else 0.0
         end_len = float(seg_lengths[-1]) if seg_lengths else 0.0
-        inner_p0 = p0 + dir0 * start_len
-        inner_p1 = p1 - dir1 * end_len
+
+        # If the user moved tip/attach to a plug mating point, the anchor targets that
+        # point (not necessarily the segment tip). Compute the distance from the anchor
+        # (attach) to the inner joint using local offsets, so the rest of the cable
+        # starts/ends at the correct locations.
+        start_seg_path = state.segment_paths[0]
+        end_seg_path = state.segment_paths[-1]
+
+        start_col_local = self._child_local_offset(stage, start_seg_path, f"{start_seg_path}/collision") or Gf.Vec3d(
+            0.0, 0.0, 0.0
+        )
+        end_col_local = self._child_local_offset(stage, end_seg_path, f"{end_seg_path}/collision") or Gf.Vec3d(
+            0.0, 0.0, 0.0
+        )
+
+        start_attach_local = self._child_local_offset(stage, start_seg_path, f"{start_seg_path}/tip/attach")
+        if start_attach_local is None:
+            start_attach_local = self._child_local_offset(stage, start_seg_path, f"{start_seg_path}/tip")
+        if start_attach_local is None:
+            start_attach_local = start_col_local + Gf.Vec3d(-0.5 * start_len, 0.0, 0.0)
+
+        end_attach_local = self._child_local_offset(stage, end_seg_path, f"{end_seg_path}/tip/attach")
+        if end_attach_local is None:
+            end_attach_local = self._child_local_offset(stage, end_seg_path, f"{end_seg_path}/tip")
+        if end_attach_local is None:
+            end_attach_local = end_col_local + Gf.Vec3d(0.5 * end_len, 0.0, 0.0)
+
+        start_inner_local = start_col_local + Gf.Vec3d(0.5 * start_len, 0.0, 0.0)
+        end_inner_local = end_col_local + Gf.Vec3d(-0.5 * end_len, 0.0, 0.0)
+        start_to_inner = float(start_inner_local[0] - start_attach_local[0])
+        end_to_inner = float(end_attach_local[0] - end_inner_local[0])
+
+        inner_p0 = p0 + dir0 * start_to_inner
+        inner_p1 = p1 - dir1 * end_to_inner
 
         delta = inner_p1 - inner_p0
         straight_dist = delta.GetLength()
