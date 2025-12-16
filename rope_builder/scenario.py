@@ -149,7 +149,6 @@ class RopeBuilderController:
             raise ValueError("Invalid cable parameters. Please fix the highlighted values.")
 
         stage = self._require_stage()
-        self._ensure_physics_scene(stage)
 
         root_path = self._make_unique_root_path(stage, name or "cable")
         params = RopeParameters(**vars(self._params))
