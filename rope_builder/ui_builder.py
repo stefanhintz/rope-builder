@@ -159,6 +159,7 @@ class UIBuilder:
                 )
                 ui.Label(
                     "- Place plug meshes under 'segment_start/tip' and 'segment_end/tip' (avoid fixed joints; keep plugs collider-only).",
+                    "- Optional: move 'segment_start/tip/attach' and 'segment_end/tip/attach' to the plug mating point; 'Fit cable' will align these to anchors when present.",
                     word_wrap=True,
                     style=get_style(),
                 )

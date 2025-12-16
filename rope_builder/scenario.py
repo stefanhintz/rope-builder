@@ -404,16 +404,28 @@ class RopeBuilderController:
         start_len = seg_lengths[0] if seg_lengths else state.params.segment_length
         start_tip = Sdf.Path(start_seg).AppendPath("tip")
         if not stage.GetPrimAtPath(start_tip).IsValid():
+            col_local = self._child_local_offset(stage, start_seg, f"{start_seg}/collision") or Gf.Vec3d(0.0, 0.0, 0.0)
+            tip_local = col_local + Gf.Vec3d(-0.5 * float(start_len), 0.0, 0.0)
             tip = UsdGeom.Xform.Define(stage, start_tip)
-            tip.AddTranslateOp().Set(Gf.Vec3f(-0.5 * float(start_len), 0.0, 0.0))
+            tip.AddTranslateOp().Set(Gf.Vec3f(float(tip_local[0]), float(tip_local[1]), float(tip_local[2])))
+        start_attach = start_tip.AppendPath("attach")
+        if not stage.GetPrimAtPath(start_attach).IsValid():
+            attach = UsdGeom.Xform.Define(stage, start_attach)
+            attach.AddTranslateOp().Set(Gf.Vec3f(0.0, 0.0, 0.0))
 
         # End segment tip at local +X end.
         end_seg = state.segment_paths[-1]
         end_len = seg_lengths[-1] if seg_lengths else state.params.segment_length
         end_tip = Sdf.Path(end_seg).AppendPath("tip")
         if not stage.GetPrimAtPath(end_tip).IsValid():
+            col_local = self._child_local_offset(stage, end_seg, f"{end_seg}/collision") or Gf.Vec3d(0.0, 0.0, 0.0)
+            tip_local = col_local + Gf.Vec3d(0.5 * float(end_len), 0.0, 0.0)
             tip = UsdGeom.Xform.Define(stage, end_tip)
-            tip.AddTranslateOp().Set(Gf.Vec3f(0.5 * float(end_len), 0.0, 0.0))
+            tip.AddTranslateOp().Set(Gf.Vec3f(float(tip_local[0]), float(tip_local[1]), float(tip_local[2])))
+        end_attach = end_tip.AppendPath("attach")
+        if not stage.GetPrimAtPath(end_attach).IsValid():
+            attach = UsdGeom.Xform.Define(stage, end_attach)
+            attach.AddTranslateOp().Set(Gf.Vec3f(0.0, 0.0, 0.0))
 
     def delete_rope(self, root_path: Optional[str] = None):
         """Remove a cable from the stage and controller."""
@@ -895,21 +907,41 @@ class RopeBuilderController:
         mid_rope_len = float(rope_len - start_len - end_len)
         cursor_mid = 0.0
         last_index = len(state.segment_paths) - 1
+
+        # Robustly align end segments by their authored tip prims (if present). This avoids
+        # half-segment offsets when segment xform origins are not centered (common in imports).
+        start_seg_path = state.segment_paths[0]
+        end_seg_path = state.segment_paths[-1]
+        start_attach_local = self._child_local_offset(stage, start_seg_path, f"{start_seg_path}/tip/attach")
+        end_attach_local = self._child_local_offset(stage, end_seg_path, f"{end_seg_path}/tip/attach")
+        start_tip_local = self._child_local_offset(stage, start_seg_path, f"{start_seg_path}/tip")
+        end_tip_local = self._child_local_offset(stage, end_seg_path, f"{end_seg_path}/tip")
         for idx, seg_path in enumerate(state.segment_paths):
             seg_len = seg_lengths[idx] if idx < len(seg_lengths) else state.params.segment_length
 
             desired_world_q: Optional[Gf.Quatd] = None
+            seg_origin_world: Optional[Gf.Vec3d] = None
 
             # End segments: force exact alignment with anchor transforms so plugs
             # parented under segment_start/tip and segment_end/tip match orientation.
             if idx == 0:
-                center_world = p0 + dir0 * (seg_len * 0.5)
                 tangent_world = dir0
                 desired_world_q = r0
+                tip_local = (
+                    start_attach_local
+                    if start_attach_local is not None
+                    else (start_tip_local if start_tip_local is not None else Gf.Vec3d(-0.5 * float(seg_len), 0.0, 0.0))
+                )
+                seg_origin_world = p0 - Gf.Rotation(desired_world_q).TransformDir(tip_local)
             elif idx == last_index:
-                center_world = p1 - dir1 * (seg_len * 0.5)
                 tangent_world = dir1
                 desired_world_q = r1
+                tip_local = (
+                    end_attach_local
+                    if end_attach_local is not None
+                    else (end_tip_local if end_tip_local is not None else Gf.Vec3d(0.5 * float(seg_len), 0.0, 0.0))
+                )
+                seg_origin_world = p1 - Gf.Rotation(desired_world_q).TransformDir(tip_local)
             else:
                 # Interior segments follow the smooth sampled curve.
                 if mid_rope_len <= 1e-6:
@@ -917,6 +949,14 @@ class RopeBuilderController:
                 else:
                     mid_s = (cursor_mid + 0.5 * float(seg_len)) / mid_rope_len
                 center_world, tangent_world = sample_pos_and_dir(mid_s)
+
+                # Interior segments: +X axis points along tangent_world.
+                world_rot = Gf.Rotation(Gf.Vec3d(1.0, 0.0, 0.0), tangent_world).GetQuat()
+                desired_world_q = Gf.Quatd(world_rot.GetReal(), world_rot.GetImaginary())
+
+                # Place the segment so its collision prim (if any) sits on the fitted curve.
+                col_local = self._child_local_offset(stage, seg_path, f"{seg_path}/collision") or Gf.Vec3d(0.0, 0.0, 0.0)
+                seg_origin_world = center_world - Gf.Rotation(desired_world_q).TransformDir(col_local)
 
             prim = stage.GetPrimAtPath(seg_path)
             if prim and prim.IsValid():
@@ -931,12 +971,9 @@ class RopeBuilderController:
                     parent_world = parent_xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
 
                 inv_parent = parent_world.GetInverse()
-                local_pos = inv_parent.Transform(center_world)
-
-                if desired_world_q is None:
-                    # Interior segments: +X axis points along tangent_world.
-                    world_rot = Gf.Rotation(Gf.Vec3d(1.0, 0.0, 0.0), tangent_world).GetQuat()
-                    desired_world_q = Gf.Quatd(world_rot.GetReal(), world_rot.GetImaginary())
+                if seg_origin_world is None:
+                    seg_origin_world = Gf.Vec3d(0.0, 0.0, 0.0)
+                local_pos = inv_parent.Transform(seg_origin_world)
 
                 parent_rot = parent_world.ExtractRotation().GetQuat()
                 local_q = parent_rot.GetInverse() * desired_world_q
@@ -950,16 +987,41 @@ class RopeBuilderController:
             if idx != 0 and idx != last_index:
                 cursor_mid += float(seg_len)
 
+        # Sanity check: fitted end segment tips should land on the anchors.
+        try:
+            tip0 = self._prim_world_pos(stage, f"{start_seg_path}/tip/attach") or self._prim_world_pos(
+                stage, f"{start_seg_path}/tip"
+            )
+            tip1 = self._prim_world_pos(stage, f"{end_seg_path}/tip/attach") or self._prim_world_pos(
+                stage, f"{end_seg_path}/tip"
+            )
+            eps = 1e-4
+            if tip0 is not None and float((tip0 - p0).GetLength()) > eps:
+                carb.log_warn(
+                    f"[RopeBuilder] Start attach mismatch after fit: {float((tip0 - p0).GetLength()):.6f} m"
+                )
+            if tip1 is not None and float((tip1 - p1).GetLength()) > eps:
+                carb.log_warn(f"[RopeBuilder] End attach mismatch after fit: {float((tip1 - p1).GetLength()):.6f} m")
+        except Exception:
+            pass
+
         # Update spline points from new segment poses, but keep anchors as user-authored
         # handles (do not overwrite them from segment endpoints here).
         self._update_curve_points(state)
 
         # Refresh endpoint cache for curve update throttling.
         if stage and state.segment_paths:
-            p_first = self._segment_world_pos(stage, state.segment_paths[0])
-            p_last = self._segment_world_pos(stage, state.segment_paths[-1])
-            if p_first is not None and p_last is not None:
-                state._last_endpoints = (Gf.Vec3f(p_first), Gf.Vec3f(p_last))
+            p0d = self._prim_world_pos(stage, f"{state.segment_paths[0]}/collision") or self._prim_world_pos(
+                stage, state.segment_paths[0]
+            )
+            p1d = self._prim_world_pos(stage, f"{state.segment_paths[-1]}/collision") or self._prim_world_pos(
+                stage, state.segment_paths[-1]
+            )
+            if p0d is not None and p1d is not None:
+                state._last_endpoints = (
+                    Gf.Vec3f(float(p0d[0]), float(p0d[1]), float(p0d[2])),
+                    Gf.Vec3f(float(p1d[0]), float(p1d[1]), float(p1d[2])),
+                )
         state.dirty = False
 
         # Update cached joint drive targets from the new pose so the edit UI stays in sync.
@@ -1117,6 +1179,12 @@ class RopeBuilderController:
                 tip = UsdGeom.Xform.Define(stage, tip_path)
                 local_x = (-0.5 * seg_len) if name == "segment_start" else (0.5 * seg_len)
                 tip.AddTranslateOp().Set(Gf.Vec3f(local_x, 0.0, 0.0))
+            # Optional user-authored attachment point under the tip. If present, the fitter
+            # can align this point (e.g. plug mating face) to the anchors instead of the tip origin.
+            attach_path = tip_path.AppendPath("attach")
+            if not stage.GetPrimAtPath(attach_path).IsValid():
+                attach = UsdGeom.Xform.Define(stage, attach_path)
+                attach.AddTranslateOp().Set(Gf.Vec3f(0.0, 0.0, 0.0))
 
         return str(segment_path)
 
@@ -1201,10 +1269,19 @@ class RopeBuilderController:
         if first_pose:
             pos, rot = first_pose
             dir_x = Gf.Rotation(rot).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
-            pts_world.append(pos - dir_x * (half_len_first + extension))
+            tip = self._prim_world_pos(stage, f"{state.segment_paths[0]}/tip/attach") or self._prim_world_pos(
+                stage, f"{state.segment_paths[0]}/tip"
+            )
+            if tip is None:
+                tip = pos - dir_x * half_len_first
+            pts_world.append(tip - dir_x * extension)
 
         for path in state.segment_paths:
-            wp = self._segment_world_pos(stage, path)
+            # Prefer the collision prim position, which remains centered even if the segment
+            # xform origin is authored at an end (common in imported assets).
+            wp = self._prim_world_pos(stage, f"{path}/collision")
+            if wp is None:
+                wp = self._prim_world_pos(stage, path)
             if wp is None:
                 carb.log_warn(f"[RopeBuilder] Missing segment for curve update: {path}")
                 continue
@@ -1213,7 +1290,12 @@ class RopeBuilderController:
         if last_pose:
             pos, rot = last_pose
             dir_x = Gf.Rotation(rot).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
-            pts_world.append(pos + dir_x * (half_len_last + extension))
+            tip = self._prim_world_pos(stage, f"{state.segment_paths[-1]}/tip/attach") or self._prim_world_pos(
+                stage, f"{state.segment_paths[-1]}/tip"
+            )
+            if tip is None:
+                tip = pos + dir_x * half_len_last
+            pts_world.append(tip + dir_x * extension)
 
         curves = UsdGeom.BasisCurves(curve_prim)
 
@@ -1257,18 +1339,24 @@ class RopeBuilderController:
         # Cheap movement detection if not marked dirty.
         if not state.dirty:
             if stage and state.segment_paths:
-                p0 = self._segment_world_pos(stage, state.segment_paths[0])
-                p1 = self._segment_world_pos(stage, state.segment_paths[-1])
-                if p0 is not None and p1 is not None:
+                p0d = self._prim_world_pos(stage, f"{state.segment_paths[0]}/collision") or self._prim_world_pos(
+                    stage, state.segment_paths[0]
+                )
+                p1d = self._prim_world_pos(stage, f"{state.segment_paths[-1]}/collision") or self._prim_world_pos(
+                    stage, state.segment_paths[-1]
+                )
+                if p0d is not None and p1d is not None:
+                    p0 = Gf.Vec3f(float(p0d[0]), float(p0d[1]), float(p0d[2]))
+                    p1 = Gf.Vec3f(float(p1d[0]), float(p1d[1]), float(p1d[2]))
                     last = state._last_endpoints
                     eps = 1e-5
                     if (
                         last is None
-                        or (Gf.Vec3f(p0) - last[0]).GetLength() > eps
-                        or (Gf.Vec3f(p1) - last[1]).GetLength() > eps
+                        or (p0 - last[0]).GetLength() > eps
+                        or (p1 - last[1]).GetLength() > eps
                     ):
                         state.dirty = True
-                        state._last_endpoints = (Gf.Vec3f(p0), Gf.Vec3f(p1))
+                        state._last_endpoints = (p0, p1)
 
             if not state.dirty:
                 return
@@ -1279,10 +1367,17 @@ class RopeBuilderController:
 
         # Refresh endpoint cache after update.
         if stage and state.segment_paths:
-            p0 = self._segment_world_pos(stage, state.segment_paths[0])
-            p1 = self._segment_world_pos(stage, state.segment_paths[-1])
-            if p0 is not None and p1 is not None:
-                state._last_endpoints = (Gf.Vec3f(p0), Gf.Vec3f(p1))
+            p0d = self._prim_world_pos(stage, f"{state.segment_paths[0]}/collision") or self._prim_world_pos(
+                stage, state.segment_paths[0]
+            )
+            p1d = self._prim_world_pos(stage, f"{state.segment_paths[-1]}/collision") or self._prim_world_pos(
+                stage, state.segment_paths[-1]
+            )
+            if p0d is not None and p1d is not None:
+                state._last_endpoints = (
+                    Gf.Vec3f(float(p0d[0]), float(p0d[1]), float(p0d[2])),
+                    Gf.Vec3f(float(p1d[0]), float(p1d[1]), float(p1d[2])),
+                )
 
         state.dirty = False
 
@@ -1294,6 +1389,29 @@ class RopeBuilderController:
         m = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
         pos = m.ExtractTranslation()
         return Gf.Vec3f(pos[0], pos[1], pos[2])
+
+    def _prim_world_pos(self, stage, path: str) -> Optional[Gf.Vec3d]:
+        prim = stage.GetPrimAtPath(path)
+        if not prim or not prim.IsValid():
+            return None
+        xf = UsdGeom.Xformable(prim)
+        m = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        return Gf.Vec3d(m.ExtractTranslation())
+
+    def _child_local_offset(self, stage, parent_path: str, child_path: str) -> Optional[Gf.Vec3d]:
+        """Return the child prim origin in the local space of parent_path."""
+        parent_prim = stage.GetPrimAtPath(parent_path)
+        child_prim = stage.GetPrimAtPath(child_path)
+        if not parent_prim or not parent_prim.IsValid() or not child_prim or not child_prim.IsValid():
+            return None
+
+        parent_xf = UsdGeom.Xformable(parent_prim)
+        child_xf = UsdGeom.Xformable(child_prim)
+        parent_world = parent_xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        child_world = child_xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+
+        inv_parent = parent_world.GetInverse()
+        return Gf.Vec3d(inv_parent.Transform(Gf.Vec3d(child_world.ExtractTranslation())))
 
     def _segment_frame(self, stage, path: str) -> Optional[Tuple[Gf.Vec3d, Gf.Quatd]]:
         prim = stage.GetPrimAtPath(path)
@@ -1387,12 +1505,20 @@ class RopeBuilderController:
         if first_pose:
             pos, rot = first_pose
             dir_x = Gf.Rotation(rot).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
-            tip = pos - dir_x * (seg_lengths[0] * 0.5)
+            tip = self._prim_world_pos(stage, f"{state.segment_paths[0]}/tip/attach") or self._prim_world_pos(
+                stage, f"{state.segment_paths[0]}/tip"
+            )
+            if tip is None:
+                tip = pos - dir_x * (seg_lengths[0] * 0.5)
             self._set_world_transform(state.anchor_start, tip, rot)
         if last_pose:
             pos, rot = last_pose
             dir_x = Gf.Rotation(rot).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
-            tip = pos + dir_x * (seg_lengths[-1] * 0.5)
+            tip = self._prim_world_pos(stage, f"{state.segment_paths[-1]}/tip/attach") or self._prim_world_pos(
+                stage, f"{state.segment_paths[-1]}/tip"
+            )
+            if tip is None:
+                tip = pos + dir_x * (seg_lengths[-1] * 0.5)
             self._set_world_transform(state.anchor_end, tip, rot)
 
     def _set_world_transform(self, path: str, pos: Gf.Vec3d, rot: Gf.Quatd):
