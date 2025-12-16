@@ -1301,9 +1301,7 @@ class RopeBuilderController:
         if first_pose:
             pos, rot = first_pose
             dir_x = Gf.Rotation(rot).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
-            tip = self._prim_world_pos(stage, f"{state.segment_paths[0]}/tip/attach") or self._prim_world_pos(
-                stage, f"{state.segment_paths[0]}/tip"
-            )
+            tip = self._prim_world_pos(stage, f"{state.segment_paths[0]}/tip")
             if tip is None:
                 tip = pos - dir_x * half_len_first
             pts_world.append(tip - dir_x * extension)
@@ -1322,9 +1320,7 @@ class RopeBuilderController:
         if last_pose:
             pos, rot = last_pose
             dir_x = Gf.Rotation(rot).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
-            tip = self._prim_world_pos(stage, f"{state.segment_paths[-1]}/tip/attach") or self._prim_world_pos(
-                stage, f"{state.segment_paths[-1]}/tip"
-            )
+            tip = self._prim_world_pos(stage, f"{state.segment_paths[-1]}/tip")
             if tip is None:
                 tip = pos + dir_x * half_len_last
             pts_world.append(tip + dir_x * extension)

@@ -29,6 +29,7 @@ This section is used most of the time when laying out cables in a scene.
   - Each cable has two internal anchors: `anchor_start` and `anchor_end` under the cable root.
   - Place plug meshes under `segment_start/tip` and `segment_end/tip` (avoid fixed joints; keep plugs collider-only so the end segment remains the single rigid body).
   - Optional: move `segment_start/tip/attach` and `segment_end/tip/attach` to the exact plug mating point; **Fit cable** aligns these points to the anchors when present.
+  - The rendered cable spline/mesh uses `segment_start/tip` and `segment_end/tip` as its endpoints so the cable does not overlap the plugs.
   - Move the anchors (not the plug meshes) to the final connection points (sockets, device ports, etc.).
 
 - **Fit cable**

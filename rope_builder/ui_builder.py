@@ -168,6 +168,11 @@ class UIBuilder:
                     style=get_style(),
                 )
                 ui.Label(
+                    "- Note: the cable spline/mesh endpoints use 'segment_start/tip' and 'segment_end/tip' (so the cable doesn't overlap the plugs).",
+                    word_wrap=True,
+                    style=get_style(),
+                )
+                ui.Label(
                     "- Move the anchors (not plug meshes) to their final connection points (sockets, devices, etc.).",
                     word_wrap=True,
                     style=get_style(),
