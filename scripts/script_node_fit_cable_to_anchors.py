@@ -22,7 +22,11 @@ from typing import List, Optional, Tuple
 
 import carb
 import omni.usd
-from pxr import Gf, Usd, UsdGeom
+from pxr import Gf, Sdf, Usd, UsdGeom, Vt
+
+
+CURVE_EXTENSION = 0.02
+CURVE_WIDTH_SCALE = 2.0
 
 
 def compute(db):
@@ -41,6 +45,7 @@ def compute(db):
             raise RuntimeError(f"Need at least two cable segments under {root_path}.")
 
         rope_len, path_len = fit_cable_to_anchors(stage, root_path, segment_paths, keep_exact_length)
+        update_curve(stage, root_path, segment_paths)
         message = f"Fitted {root_path}: cable {rope_len:.3f} m, path {path_len:.3f} m."
         carb.log_info(f"[CableFitNode] {message}")
         _output(db, "success", True)
@@ -325,6 +330,60 @@ def _sample_curve(sampler, sample_count):
         cumulative.append(length)
         last_pos = pos
     return length, ts, cumulative
+
+
+def update_curve(stage, root_path: str, segment_paths: List[str]):
+    curve_path = f"{root_path}/curve"
+    curves = UsdGeom.BasisCurves.Get(stage, Sdf.Path(curve_path))
+    if not curves:
+        curves = UsdGeom.BasisCurves.Define(stage, Sdf.Path(curve_path))
+    curve_prim = curves.GetPrim()
+    curves.CreateTypeAttr(UsdGeom.Tokens.cubic).Set(UsdGeom.Tokens.cubic)
+    curves.CreateBasisAttr(UsdGeom.Tokens.bspline).Set(UsdGeom.Tokens.bspline)
+    curves.CreateWrapAttr(UsdGeom.Tokens.pinned).Set(UsdGeom.Tokens.pinned)
+
+    points = []
+    first_pose = _world_frame(stage, segment_paths[0])
+    last_pose = _world_frame(stage, segment_paths[-1])
+    seg_lengths = _segment_lengths(stage, segment_paths)
+    extension = max(CURVE_EXTENSION, 0.0)
+
+    if first_pose:
+        pos, rot = first_pose
+        dir_x = Gf.Rotation(rot).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
+        tip = _world_pos(stage, f"{segment_paths[0]}/tip")
+        if tip is None:
+            tip = pos - dir_x * (float(seg_lengths[0]) * 0.5)
+        points.append(tip - dir_x * extension)
+
+    for path in segment_paths:
+        pos = _world_pos(stage, f"{path}/collision") or _world_pos(stage, path)
+        if pos is not None:
+            points.append(pos)
+
+    if last_pose:
+        pos, rot = last_pose
+        dir_x = Gf.Rotation(rot).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
+        tip = _world_pos(stage, f"{segment_paths[-1]}/tip")
+        if tip is None:
+            tip = pos + dir_x * (float(seg_lengths[-1]) * 0.5)
+        points.append(tip + dir_x * extension)
+
+    counts_attr = curves.GetCurveVertexCountsAttr() or curves.CreateCurveVertexCountsAttr()
+    points_attr = curves.GetPointsAttr() or curves.CreatePointsAttr()
+    if len(points) < 2:
+        counts_attr.Set(Vt.IntArray([0]))
+        points_attr.Set(Vt.Vec3fArray())
+        return
+
+    inv = UsdGeom.Xformable(curve_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default()).GetInverse()
+    local_points = [Gf.Vec3f(inv.Transform(point)) for point in points]
+    counts_attr.Set(Vt.IntArray([len(local_points)]))
+    points_attr.Set(Vt.Vec3fArray(local_points))
+
+    radius_attr = stage.GetPrimAtPath(f"{segment_paths[0]}/collision").GetAttribute("radius")
+    radius = float(radius_attr.Get()) if radius_attr and radius_attr.HasAuthoredValueOpinion() else 0.01
+    curves.CreateWidthsAttr(Vt.FloatArray([max(radius * max(CURVE_WIDTH_SCALE, 0.0), 1e-4)]))
 
 
 def _set_local_from_world(stage, path, pos, rot):
