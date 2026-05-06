@@ -18,7 +18,7 @@ This script intentionally does not import the Cable Builder extension.
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import carb
 import omni.usd
@@ -29,7 +29,6 @@ CURVE_EXTENSION = 0.02
 CURVE_WIDTH_SCALE = 2.0
 UPDATE_HZ = 30.0
 _ACCUMULATED_SECONDS = 0.0
-_INITIAL_CURVE_STATES: Dict[str, Tuple[Optional[Vt.IntArray], Optional[Vt.Vec3fArray], Optional[Vt.FloatArray]]] = {}
 _PLAYING_ROOTS = set()
 
 
@@ -57,15 +56,11 @@ def compute(db):
 
         if not timeline_playing:
             _ACCUMULATED_SECONDS = 0.0
-            if root_path in _PLAYING_ROOTS:
-                _restore_curve_state(stage, root_path, segment_paths)
-                _PLAYING_ROOTS.discard(root_path)
-                return _finish(db, True, f"Restored initial curve for {root_path}.")
-            return _finish(db, False, "Timeline stopped; curve already restored.")
+            update_curve(stage, root_path, segment_paths)
+            _PLAYING_ROOTS.discard(root_path)
+            return _finish(db, True, f"Fitted curve after timeline stop for {root_path}.")
 
-        if root_path not in _PLAYING_ROOTS:
-            _INITIAL_CURVE_STATES[root_path] = _capture_curve_state(stage, root_path)
-            _PLAYING_ROOTS.add(root_path)
+        _PLAYING_ROOTS.add(root_path)
 
         _ACCUMULATED_SECONDS += delta_seconds
         if _ACCUMULATED_SECONDS < (1.0 / UPDATE_HZ):
@@ -80,6 +75,21 @@ def compute(db):
         _output(db, "didUpdate", False)
         _output(db, "message", message)
         return False
+
+
+def cleanup(db):
+    try:
+        stage = omni.usd.get_context().get_stage()
+        if not stage:
+            return
+        root_path = _resolve_root_path(db, stage)
+        segment_paths = _segment_paths(stage, root_path)
+        if len(segment_paths) >= 2:
+            update_curve(stage, root_path, segment_paths)
+            _PLAYING_ROOTS.discard(root_path)
+            carb.log_info(f"[CableCurveNode] Fitted curve during cleanup for {root_path}.")
+    except Exception as exc:
+        carb.log_warn(f"[CableCurveNode] Cleanup curve fit failed: {exc}")
 
 
 def update_curve(stage, root_path: str, segment_paths: List[str]):
@@ -134,49 +144,6 @@ def update_curve(stage, root_path: str, segment_paths: List[str]):
     radius_attr = stage.GetPrimAtPath(f"{segment_paths[0]}/collision").GetAttribute("radius")
     radius = float(radius_attr.Get()) if radius_attr and radius_attr.HasAuthoredValueOpinion() else 0.01
     curves.CreateWidthsAttr(Vt.FloatArray([max(radius * max(CURVE_WIDTH_SCALE, 0.0), 1e-4)]))
-
-
-def _capture_curve_state(stage, root_path: str):
-    curves = UsdGeom.BasisCurves.Get(stage, Sdf.Path(f"{root_path}/curve"))
-    if not curves:
-        return None, None, None
-
-    counts_attr = curves.GetCurveVertexCountsAttr()
-    points_attr = curves.GetPointsAttr()
-    widths_attr = curves.GetWidthsAttr()
-
-    counts = counts_attr.Get() if counts_attr and counts_attr.HasAuthoredValueOpinion() else None
-    points = points_attr.Get() if points_attr and points_attr.HasAuthoredValueOpinion() else None
-    widths = widths_attr.Get() if widths_attr and widths_attr.HasAuthoredValueOpinion() else None
-    return counts, points, widths
-
-
-def _restore_curve_state(stage, root_path: str, segment_paths: List[str]):
-    counts, points, widths = _INITIAL_CURVE_STATES.get(root_path, (None, None, None))
-    if counts is None or points is None:
-        update_curve(stage, root_path, segment_paths)
-        return
-
-    curves = UsdGeom.BasisCurves.Get(stage, Sdf.Path(f"{root_path}/curve"))
-    if not curves:
-        curves = UsdGeom.BasisCurves.Define(stage, Sdf.Path(f"{root_path}/curve"))
-    curves.CreateTypeAttr(UsdGeom.Tokens.cubic).Set(UsdGeom.Tokens.cubic)
-    curves.CreateBasisAttr(UsdGeom.Tokens.bspline).Set(UsdGeom.Tokens.bspline)
-    curves.CreateWrapAttr(UsdGeom.Tokens.pinned).Set(UsdGeom.Tokens.pinned)
-
-    counts_attr = curves.GetCurveVertexCountsAttr() or curves.CreateCurveVertexCountsAttr()
-    points_attr = curves.GetPointsAttr() or curves.CreatePointsAttr()
-    counts_attr.Set(Vt.IntArray(counts))
-    points_attr.Set(Vt.Vec3fArray(points))
-
-    widths_attr = curves.GetWidthsAttr()
-    if widths is None:
-        if widths_attr:
-            widths_attr.Clear()
-    else:
-        if not widths_attr:
-            widths_attr = curves.CreateWidthsAttr()
-        widths_attr.Set(Vt.FloatArray(widths))
 
 
 def _timeline_is_playing(delta_seconds: float) -> bool:
