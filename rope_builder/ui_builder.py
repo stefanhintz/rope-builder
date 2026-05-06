@@ -12,6 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""UI controls for creating, discovering, and shaping cables.
+
+Design note:
+Constraints: the UI only exposes operations backed by RopeBuilderController state.
+Trade-offs: keep callbacks small and repetitive so Isaac UI behavior stays obvious.
+Rejected alternative: generic form/action builders; they hid one-off UI rules without reducing risk.
+"""
+
 import math
 
 import omni.ui as ui
@@ -22,6 +30,7 @@ from omni.usd import StageEventType
 from omni.timeline import TimelineEventType
 
 from .scenario import ROT_AXES, RopeBuilderController
+
 
 class _CableItem(ui.AbstractItem):
     def __init__(self, label: str):
@@ -39,10 +48,9 @@ class _CableTreeModel(ui.AbstractItemModel):
 
     def set_paths(self, paths: list[str]):
         self._items = [_CableItem(p) for p in paths]
-        self._item_changed(None)  # notify view
+        self._item_changed(None)
 
     def get_item_value_model_count(self, item) -> int:
-        # One text column.
         return 1
 
     def get_item_children(self, item):
@@ -59,16 +67,13 @@ class _CableTreeModel(ui.AbstractItemModel):
         return item.label if item else ""
 
     def set_item_value(self, item, value, column_id=0):
-        # read-only
         return False
+
 
 class UIBuilder:
     """Creates the layout for the Cable Builder control window."""
 
     def __init__(self):
-        self.frames = []
-        self.wrapped_ui_elements = []
-
         self._controller = RopeBuilderController()
         self._status_model = ui.SimpleStringModel("No cable created.")
         self._param_models = {}
@@ -83,7 +88,6 @@ class UIBuilder:
         self._add_handle_btn = None
         self._cable_name_model = ui.SimpleStringModel("cable")
         self._active_path_model = ui.SimpleStringModel("")
-        # TreeView for discovered/known cables
         self._active_tree_model = _CableTreeModel()
         self._active_tree_view = None
         self._syncing_active_selection = False
@@ -93,34 +97,24 @@ class UIBuilder:
         self._orig_length_model = ui.SimpleStringModel("-")
         self._current_length_model = ui.SimpleStringModel("-")
 
-    ###################################################################################
-    #           The Functions Below Are Called Automatically By extension.py
-    ###################################################################################
-
     def on_menu_callback(self):
         pass
 
     def on_timeline_event(self, event):
-        # Hide shape handles during simulation; show them again when stopped.
-        try:
-            if event.type == int(TimelineEventType.PLAY):
-                self._controller.set_shape_handles_visible_all(False)
-            elif event.type == int(TimelineEventType.STOP):
-                self._controller.set_shape_handles_visible_all(True)
-        except Exception:
-            pass
+        if event.type == int(TimelineEventType.PLAY):
+            self._controller.set_shape_handles_visible_all(False)
+        elif event.type == int(TimelineEventType.STOP):
+            self._controller.set_shape_handles_visible_all(True)
 
     def on_physics_step(self, step: float):
         pass
 
     def on_stage_event(self, event):
         if event.type == int(StageEventType.OPENED):
-            # Only clear cached state on stage reopen; keep existing prims intact.
             self._controller.forget_all_cables()
             self._reset_ui()
 
     def cleanup(self):
-        # Do not delete prims on shutdown; just clear controller state/subscriptions.
         self._controller.forget_all_cables()
 
     def build_ui(self):
@@ -128,9 +122,6 @@ class UIBuilder:
         self._param_models = {}
         self._param_constraints = {}
 
-        # ------------------------------------------------------------------
-        # 1) Cables
-        # ------------------------------------------------------------------
         with CollapsableFrame("Cables", collapsed=False):
             with ui.VStack(style=get_style(), spacing=6, height=0):
                 with ui.HStack(height=0, spacing=8):
@@ -147,9 +138,6 @@ class UIBuilder:
                 )
                 ui.Label("", word_wrap=True, model=self._known_cables_model)
 
-        # ------------------------------------------------------------------
-        # 2) Shaping (Anchors & Handles)
-        # ------------------------------------------------------------------
         with CollapsableFrame("Shaping (Anchors & Handles)", collapsed=False):
             with ui.VStack(style=get_style(), spacing=8, height=0):
                 ui.Label(
@@ -212,9 +200,6 @@ class UIBuilder:
                     ui.Label("Current path:", width=100, style=get_style())
                     ui.StringField(model=self._current_length_model, read_only=True, style=get_style(), width=80)
 
-        # ------------------------------------------------------------------
-        # 3) Cable Parameters (for new cables)
-        # ------------------------------------------------------------------
         with CollapsableFrame("Create new cable", collapsed=True):
             with ui.VStack(style=get_style(), spacing=8, height=0):
                 ui.Label("Parameters for new cables", style=get_style())
@@ -242,13 +227,9 @@ class UIBuilder:
                 with ui.HStack(height=0, spacing=8):
                     self._create_btn = ui.Button("Create cable", clicked_fn=self._on_create_rope)
 
-        # ------------------------------------------------------------------
-        # 4) Joint Tuning (Advanced)
-        # ------------------------------------------------------------------
         with CollapsableFrame("Joint tuning (advanced)", collapsed=True):
             with ui.VStack(style=get_style(), spacing=8, height=0):
                 with ui.HStack(height=0, spacing=8):
-                    # Global spline subscribe/unsubscribe for all cables.
                     self._subscription_btn = ui.Button(
                         "Subscribe splines (all)", clicked_fn=self._on_sync_all_splines_button, enabled=False
                     )
@@ -260,10 +241,6 @@ class UIBuilder:
 
         self._reset_ui()
 
-    ###################################################################################
-    #                             UI CALLBACKS AND HELPERS
-    ###################################################################################
-
     def _build_float_field(self, label: str, param_key: str, min_value: float, step: float, max_value: float = None):
         params = self._controller.parameters
         model = ui.SimpleFloatModel(getattr(params, param_key))
@@ -274,19 +251,6 @@ class UIBuilder:
         with ui.HStack(height=0):
             ui.Label(label, width=140, style=get_style())
             ui.FloatField(model=model)
-
-        self._param_models[param_key] = model
-
-    def _build_int_field(self, label: str, param_key: str, min_value: int, step: int):
-        params = self._controller.parameters
-        model = ui.SimpleIntModel(getattr(params, param_key))
-        model.add_value_changed_fn(lambda m, key=param_key: self._on_param_change(key, m.as_int))
-
-        self._param_constraints[param_key] = {"min": min_value, "type": int}
-
-        with ui.HStack(height=0):
-            ui.Label(label, width=140, style=get_style())
-            ui.IntField(model=model)
 
         self._param_models[param_key] = model
 
@@ -321,11 +285,9 @@ class UIBuilder:
         self._param_models["joint_limit_span"] = model
 
     def _on_discover_cables_button(self):
-        print("[CableBuilder UI] Discover button clicked")
-        
         try:
             found = self._controller.discover_cables("/World")
-        except Exception as exc:
+        except (RuntimeError, ValueError) as exc:
             self._update_status(str(exc), warn=True)
             return
 
@@ -422,7 +384,6 @@ class UIBuilder:
         if self._add_handle_btn:
             self._add_handle_btn.enabled = True
 
-        # Automatically subscribe spline updates for all cables.
         self._controller.start_curve_updates_all()
         self._subscription_btn.enabled = True
         self._toggle_vis_btn.enabled = True
@@ -461,77 +422,12 @@ class UIBuilder:
         self._refresh_length_labels()
         self._update_status(f"Deleted cable at {path}.", warn=False)
 
-    def _on_import_rope(self):
-        path = self._model_string(self._import_path_model, "/World/cable")
-        try:
-            prim_path = self._controller.import_cable(path)
-        except (RuntimeError, ValueError) as exc:
-            self._update_status(str(exc), warn=True)
-            return
-        self._active_path_model.set_value(prim_path)
-        self._refresh_known_cables_label()
-        self._refresh_active_tree()
-        self._delete_btn.enabled = True
-        if self._fit_anchors_btn:
-            self._fit_anchors_btn.enabled = True
-        if self._add_handle_btn:
-            self._add_handle_btn.enabled = True
-
-        # Automatically subscribe spline updates for all cables.
-        self._controller.start_curve_updates_all()
-        self._subscription_btn.enabled = True
-        self._toggle_vis_btn.enabled = True
-        self._refresh_subscription_btn()
-        self._refresh_visibility_btn()
-        self._build_joint_controls()
-        self._refresh_length_labels()
-        self._update_status(f"Imported cable at {prim_path}.", warn=False)
-
-    def _on_set_active_cable(self):
-        path = self._model_string(self._active_path_model, "")
-        if not path:
-            self._update_status("Enter a cable root path to activate.", warn=True)
-            return
-        if not self._controller.set_active_cable(path):
-            self._update_status(f"No known cable at {path}.", warn=True)
-            return
-        self._refresh_known_cables_label()
-        self._refresh_active_tree()
-        self._delete_btn.enabled = True
-        if self._fit_anchors_btn:
-            self._fit_anchors_btn.enabled = True
-        if self._add_handle_btn:
-            self._add_handle_btn.enabled = True
-        self._subscription_btn.enabled = True
-        self._toggle_vis_btn.enabled = True
-        self._refresh_subscription_btn()
-        self._refresh_visibility_btn()
-        self._build_joint_controls()
-        self._update_status(f"Active cable set to {path}.", warn=False)
-
     def _model_string(self, model, default: str = "") -> str:
         if hasattr(model, "as_string"):
             return model.as_string
         if hasattr(model, "get_value_as_string"):
             return model.get_value_as_string()
         return default
-
-    def _on_toggle_subscription(self):
-        if not self._controller.rope_exists():
-            self._update_status("Create a cable before subscribing.", warn=True)
-            return
-
-        try:
-            if self._controller.curve_subscription_active():
-                self._controller.stop_curve_updates()
-                self._update_status("Stopped spline subscription.", warn=False)
-            else:
-                self._controller.start_curve_updates()
-                self._update_status("Spline now updates from segment positions.", warn=False)
-        except (RuntimeError, ValueError) as exc:
-            self._update_status(str(exc), warn=True)
-
-        self._refresh_subscription_btn()
 
     def _on_reset_joint_axis(self, joint_index: int, axis: str):
         """Reset a single axis on one joint to zero within limits."""
@@ -552,7 +448,7 @@ class UIBuilder:
 
         try:
             result = self._controller.fit_rope_to_anchors()
-        except Exception as exc:
+        except (RuntimeError, ValueError) as exc:
             self._update_status(str(exc), warn=True)
             return
 
@@ -562,16 +458,10 @@ class UIBuilder:
 
         rope_len, path_len = result
 
-        # Rebuild joint controls so sliders reflect the updated pose, but do not
-        # re-seed controller targets from local offsets (which would re-pose).
         self._build_joint_controls(seed_from_offsets=False)
         self._refresh_length_labels()
 
-        # First, report any joint limit violations based on the fitted pose.
-        try:
-            num_viol, max_over = self._controller.get_joint_limit_violations()
-        except Exception:
-            num_viol, max_over = 0, 0.0
+        num_viol, max_over = self._controller.get_joint_limit_violations()
 
         mismatch = abs(path_len - rope_len)
 
@@ -594,7 +484,6 @@ class UIBuilder:
         if not messages:
             messages.append("Cable pose fitted between anchors.")
 
-        # Show limit-related warning first in the status, when present.
         self._update_status(" ".join(messages), warn=warn)
 
     def _on_add_shape_handle(self):
@@ -605,7 +494,7 @@ class UIBuilder:
 
         try:
             path = self._controller.create_shape_handle()
-        except Exception as exc:
+        except (RuntimeError, ValueError) as exc:
             self._update_status(str(exc), warn=True)
             return
 
@@ -637,18 +526,13 @@ class UIBuilder:
         original = 0.0
         current = 0.0
 
-        try:
-            # Prefer the active cable; if none is set yet but cables exist,
-            # fall back to the first known cable so the user still sees length info.
-            root_path = self._controller.active_cable_path()
-            if not root_path:
-                paths = self._controller.list_cable_paths()
-                root_path = paths[0] if paths else None
+        root_path = self._controller.active_cable_path()
+        if not root_path:
+            paths = self._controller.list_cable_paths()
+            root_path = paths[0] if paths else None
 
-            if root_path:
-                original, current = self._controller.get_length_info(root_path)
-        except Exception:
-            original, current = 0.0, 0.0
+        if root_path:
+            original, current = self._controller.get_length_info(root_path)
 
         if original > 0.0:
             self._orig_length_model.set_value(f"{original:.3f} m")
@@ -675,7 +559,6 @@ class UIBuilder:
         self._joint_limit_hint_model.set_value(self._joint_limit_hint_text(self._current_joint_limit_span(params)))
 
         if hasattr(self, "_delete_btn"):
-            # Active-cable-only actions depend on an active cable.
             active_exists = self._controller.rope_exists()
             self._delete_btn.enabled = True
             if self._fit_anchors_btn:
@@ -683,11 +566,9 @@ class UIBuilder:
             if self._add_handle_btn:
                 self._add_handle_btn.enabled = active_exists
 
-            # Automatically subscribe spline updates when UI resets and cables exist.
             if self._controller.list_cable_paths():
                 self._controller.start_curve_updates_all()
 
-            # Global actions depend on having any cables at all.
             has_cables = bool(self._controller.list_cable_paths())
             if self._subscription_btn:
                 self._subscription_btn.enabled = has_cables
@@ -709,18 +590,13 @@ class UIBuilder:
         paths = self._controller.list_cable_paths()
         self._active_tree_model.set_paths(paths)
 
-        # Enable/disable view.
         if self._active_tree_view and hasattr(self._active_tree_view, "enabled"):
             self._active_tree_view.enabled = bool(paths)
 
-        # Clear selection before setting a new one.
         self._syncing_active_selection = True
         try:
             if self._active_tree_view and hasattr(self._active_tree_view, "selection"):
-                try:
-                    self._active_tree_view.selection = []
-                except Exception:
-                    pass
+                self._active_tree_view.selection = []
 
             active = self._controller.active_cable_path()
             if paths and active in paths and self._active_tree_view:
@@ -773,8 +649,6 @@ class UIBuilder:
             self._update_status(f"Active cable set to {path}.", warn=False)
 
     def _update_status(self, message: str, warn: bool):
-        # Status text model is kept for potential future use, but no longer
-        # displayed in the UI.
         prefix = "Warning: " if warn else ""
         self._status_model.set_value(f"{prefix}{message}")
 
@@ -802,13 +676,7 @@ class UIBuilder:
         return updated_value, updated_value != value
 
     def _current_joint_limit_span(self, params) -> float:
-        try:
-            return max(float(getattr(params, "rot_limit_span", 0.0)), 0.0)
-        except Exception:
-            try:
-                return float(getattr(params, "rot_x_high", 0.0) - getattr(params, "rot_x_low", 0.0))
-            except Exception:
-                return 0.0
+        return max(float(getattr(params, "rot_limit_span", 0.0)), 0.0)
 
     def _joint_limit_hint_text(self, span: float) -> str:
         half = max(span * 0.5, 0.0)
@@ -820,7 +688,6 @@ class UIBuilder:
         if params.radius <= 0.0:
             return 2
 
-        # Require each segment length to exceed two radii so the collider is valid.
         ratio = params.length / (params.radius * 2.0)
         max_segments = int(math.floor(ratio - 1e-6))
         return max(max_segments, 2)
@@ -890,14 +757,10 @@ class UIBuilder:
         self._joint_slider_models = {}
         data = self._controller.get_joint_control_data()
 
-        # Local offsets (as shown in Isaac Sim D6 Joint Properties -> Local Offsets).
-        # We use body0 local orientation XYZ (Euler degrees) to seed the UI sliders on discovery/import.
         offsets_by_index = {}
-        try:
+        if seed_from_offsets:
             offsets = self._controller.get_joint_local_offsets()
             offsets_by_index = {o.get("index"): o for o in offsets}
-        except Exception:
-            offsets_by_index = {}
 
         self._syncing_joint_build = True
         try:
@@ -911,28 +774,22 @@ class UIBuilder:
                         idx = info.get("index", 0)
                         limits = info.get("limits", {})
                         targets = info.get("targets", {})
-                        # Align label and sliders horizontally with compact spacing.
                         with ui.HStack(height=0, spacing=20):
                             ui.Label(f"Joint {idx}", width=80, style=get_style())
                             with ui.HStack(height=0, spacing=8):
                                 for axis in ROT_AXES:
                                     low, high = limits.get(axis, (-180.0, 180.0))
-                                    # Prefer imported local offset orientation for initial slider value.
                                     init_val = targets.get(axis, 0.0)
                                     offs = offsets_by_index.get(idx)
-                                    used_offset = False
                                     if offs:
                                         euler = offs.get("local_rot0_euler")
                                         if euler and len(euler) == 3:
                                             if axis == "rotX":
                                                 init_val = float(euler[0])
-                                                used_offset = True
                                             elif axis == "rotY":
                                                 init_val = float(euler[1])
-                                                used_offset = True
                                             elif axis == "rotZ":
                                                 init_val = float(euler[2])
-                                                used_offset = True
 
                                     model = ui.SimpleFloatModel(init_val)
                                     model.add_value_changed_fn(

@@ -14,5 +14,3 @@
 # limitations under the License.
 
 EXTENSION_TITLE = "Cable Builder"
-
-EXTENSION_DESCRIPTION = "Building lightweight cables in Isaac Sim"

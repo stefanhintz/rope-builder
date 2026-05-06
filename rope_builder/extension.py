@@ -13,11 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Isaac Sim extension shell for Cable Builder.
+
+Design note:
+Constraints: this module only owns menu/window lifecycle and event forwarding.
+Trade-offs: keep Isaac boilerplate explicit instead of hiding it behind helpers.
+Rejected alternative: generic extension base class; it obscures the few callbacks used here.
+"""
+
 import asyncio
-import gc
 
 import omni
-import omni.kit.commands
 import omni.physx as _physx
 import omni.timeline
 import omni.ui as ui
@@ -27,36 +33,15 @@ from isaacsim.gui.components.menu import MenuItemDescription
 from omni.kit.menu.utils import add_menu_items, remove_menu_items
 from omni.usd import StageEventType
 
-from .global_variables import EXTENSION_DESCRIPTION, EXTENSION_TITLE
+from .global_variables import EXTENSION_TITLE
 from .ui_builder import UIBuilder
-
-"""
-This file serves as a basic template for the standard boilerplate operations
-that make a UI-based extension appear on the toolbar.
-
-This implementation is meant to cover most use-cases without modification.
-Various callbacks are hooked up to a seperate class UIBuilder in .ui_builder.py
-Most users will be able to make their desired UI extension by interacting solely with
-UIBuilder.
-
-This class sets up standard useful callback functions in UIBuilder:
-    on_menu_callback: Called when extension is opened
-    on_timeline_event: Called when timeline is stopped, paused, or played
-    on_physics_step: Called on every physics step
-    on_stage_event: Called when stage is opened or closed
-    cleanup: Called when resources such as physics subscriptions should be cleaned up
-    build_ui: User function that creates the UI they want.
-"""
 
 
 class Extension(omni.ext.IExt):
     def on_startup(self, ext_id: str):
-        """Initialize extension and UI elements"""
-
         self.ext_id = ext_id
         self._usd_context = omni.usd.get_context()
 
-        # Build Window
         self._window = ScrollingWindow(
             title=EXTENSION_TITLE, width=600, height=500, visible=False, dockPreference=ui.DockPreference.LEFT_BOTTOM
         )
@@ -75,18 +60,14 @@ class Extension(omni.ext.IExt):
 
         add_menu_items(self._menu_items, EXTENSION_TITLE)
 
-        # Filled in with User Functions
         self.ui_builder = UIBuilder()
 
-        # Events
-        self._usd_context = omni.usd.get_context()
         self._physxIFace = _physx.get_physx_interface()
         self._physx_subscription = None
         self._stage_event_sub = None
         self._timeline = omni.timeline.get_timeline_interface()
 
     def on_shutdown(self):
-        self._models = {}
         remove_menu_items(self._menu_items, EXTENSION_TITLE)
 
         action_registry = omni.kit.actions.core.get_action_registry()
@@ -95,11 +76,9 @@ class Extension(omni.ext.IExt):
         if self._window:
             self._window = None
         self.ui_builder.cleanup()
-        gc.collect()
 
     def _on_window(self, visible):
         if self._window.visible:
-            # Subscribe to Stage and Timeline Events
             self._usd_context = omni.usd.get_context()
             events = self._usd_context.get_stage_event_stream()
             self._stage_event_sub = events.create_subscription_to_pop(self._on_stage_event)
@@ -133,10 +112,6 @@ class Extension(omni.ext.IExt):
 
         self._task = asyncio.ensure_future(dock_window())
 
-    #################################################################
-    # Functions below this point call user functions
-    #################################################################
-
     def _menu_callback(self):
         self._window.visible = not self._window.visible
         self.ui_builder.on_menu_callback()
@@ -155,12 +130,10 @@ class Extension(omni.ext.IExt):
 
     def _on_stage_event(self, event):
         if event.type == int(StageEventType.OPENED) or event.type == int(StageEventType.CLOSED):
-            # stage was opened or closed, cleanup
             self._physx_subscription = None
             self.ui_builder.cleanup()
 
         self.ui_builder.on_stage_event(event)
 
     def _build_extension_ui(self):
-        # Call user function for building UI
         self.ui_builder.build_ui()

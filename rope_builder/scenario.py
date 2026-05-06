@@ -13,6 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""USD authoring and edit-mode fitting for Cable Builder ropes.
+
+Design note:
+Constraints: cables are segment chains with D6 joints, anchors, optional handles, and a visual curve.
+Trade-offs: favor explicit USD operations over generic factories so imported prim quirks stay visible.
+Rejected alternative: a flexible solver/config layer; it would add knobs without improving the current tool.
+"""
+
 from __future__ import annotations
 
 import re
@@ -58,17 +66,6 @@ class RopeParameters:
         return self.length / float(self.segment_count + 0.5)
 
     @property
-    def segment_mass(self) -> float:
-        if self.segment_count <= 0:
-            return 0.0
-        return self.mass / float(self.segment_count)
-
-    @property
-    def capsule_height(self) -> float:
-        """Cylinder height so total capsule length matches the desired segment length."""
-        return max(self.segment_length - 2.0 * self.radius, 1e-4)
-
-    @property
     def rot_limits(self) -> Dict[str, Tuple[float, float]]:
         half = max(self.rot_limit_span * 0.5, 0.0)
         return {
@@ -97,7 +94,6 @@ class CableState:
     handle_paths: List[str] = field(default_factory=list)
     show_curve: bool = True
     update_subscription: Optional[Any] = None
-    # Performance helpers
     dirty: bool = True
     _accum_dt: float = 0.0
     _last_endpoints: Optional[Tuple[Gf.Vec3f, Gf.Vec3f]] = None
@@ -114,7 +110,6 @@ class RopeBuilderController:
         self._params = RopeParameters()
         self._ensure_parameter_defaults()
 
-        self._physics_scene_path = "/World/physicsScene"
         self._cables: Dict[str, CableState] = {}
         self._active_path: Optional[str] = None
 
@@ -196,8 +191,8 @@ class RopeBuilderController:
             root_path=root_path,
             curve_path=curve_path,
             params=params,
-             original_length=float(params.length),
-             current_path_length=float(params.length),
+            original_length=float(params.length),
+            current_path_length=float(params.length),
             segment_lengths=[length for _, length in segment_plan],
             segment_paths=segment_paths,
             joint_paths=joint_paths,
@@ -291,7 +286,7 @@ class RopeBuilderController:
                     if t_attr and t_attr.HasAuthoredValueOpinion():
                         try:
                             target_val = float(t_attr.Get())
-                        except Exception:
+                        except (TypeError, ValueError):
                             target_val = None
 
                 if target_val is None:
@@ -469,18 +464,12 @@ class RopeBuilderController:
     def start_curve_updates_all(self):
         """Subscribe spline updates for all cables."""
         for rp in self.list_cable_paths():
-            try:
-                self.start_curve_updates(rp)
-            except Exception as exc:
-                carb.log_warn(f"[RopeBuilder] Failed to start curve updates for {rp}: {exc}")
+            self.start_curve_updates(rp)
 
     def stop_curve_updates_all(self):
         """Unsubscribe spline updates for all cables."""
         for rp in self.list_cable_paths():
-            try:
-                self.stop_curve_updates(rp)
-            except Exception as exc:
-                carb.log_warn(f"[RopeBuilder] Failed to stop curve updates for {rp}: {exc}")
+            self.stop_curve_updates(rp)
 
     def start_curve_updates(self, root_path: Optional[str] = None):
         """Subscribe to per-frame updates for a cable spline."""
@@ -510,10 +499,6 @@ class RopeBuilderController:
                 state.update_subscription = None
             carb.log_info(f"[RopeBuilder] Unsubscribed spline updates for {state.root_path}.")
 
-    def curve_subscription_active(self) -> bool:
-        state = self._get_state(require=False)
-        return bool(state and state.update_subscription)
-    
     def showing_curve_state(self) -> bool:
         """Return current show_curve state for the 'global' UI toggle."""
         paths = self.list_cable_paths()
@@ -542,19 +527,6 @@ class RopeBuilderController:
             self._apply_visibility_state(state)
 
         return new_show_curve
-
-
-    def toggle_visibility(self) -> bool:
-        """Toggle between showing spline or collision capsules on the active cable."""
-        state = self._get_state()
-        state.show_curve = not state.show_curve
-        state.dirty = True        
-        self._apply_visibility_state(state)
-        return state.show_curve
-
-    def showing_curve(self) -> bool:
-        state = self._get_state(require=False)
-        return True if state is None else state.show_curve
 
     def get_joint_control_data(self) -> List[Dict]:
         state = self._get_state(require=False)
@@ -606,18 +578,6 @@ class RopeBuilderController:
 
         return clamped
 
-    def reset_joint_drive_targets(self):
-        """Reset all drive targets to zero within limits for the active cable."""
-        state = self._get_state(require=False)
-        if not state:
-            return
-        for idx, path in enumerate(state.joint_paths):
-            limits = state.joint_limits.get(path, {})
-            for axis in ROT_AXES:
-                low, high = limits.get(axis, (-180.0, 180.0))
-                if low <= 0.0 <= high:
-                    self.set_joint_drive_target(idx, axis, 0.0, apply_pose=True)
-
     def create_shape_handle(self, root_path: Optional[str] = None) -> str:
         """Create a movable handle prim for shaping the cable between fixed anchors."""
         state = self._get_state(root_path, require=True)
@@ -651,13 +611,9 @@ class RopeBuilderController:
         xf.ClearXformOpOrder()
         xf.AddTranslateOp().Set(Gf.Vec3f(pos))
 
-        # Optional small visual so the handle is easy to select.
-        try:
-            sphere_path = Sdf.Path(handle_path).AppendPath("visual")
-            sphere = UsdGeom.Sphere.Define(stage, sphere_path)
-            sphere.CreateRadiusAttr(0.01)
-        except Exception:
-            pass
+        sphere_path = Sdf.Path(handle_path).AppendPath("visual")
+        sphere = UsdGeom.Sphere.Define(stage, sphere_path)
+        sphere.CreateRadiusAttr(0.01)
 
         state.handle_paths.append(handle_path)
         carb.log_info(f"[RopeBuilder] Created shape handle at {handle_path}.")
@@ -722,12 +678,7 @@ class RopeBuilderController:
         if not state or not stage or not state.segment_paths:
             return None
 
-        # Switch to anchor-driven mode: anchors become user handles and stop
-        # being overwritten from cable tips.
-        try:
-            state.anchors_follow_rope = False
-        except Exception:
-            pass
+        state.anchors_follow_rope = False
 
         # Anchor prims are used as authoring handles: read their current world-space
         # frames and build a smooth curve between them, optionally passing through
@@ -801,9 +752,6 @@ class RopeBuilderController:
         tangent_scale = straight_dist * 0.5
         if tangent_scale < 1e-4:
             tangent_scale = max(rope_len * 0.25, 1e-3)
-        m0 = dir0 * tangent_scale
-        m1 = dir1 * tangent_scale
-
         # Collect control points for the interior curve: inner-start tip, any shape
         # handles, inner-end tip.
         ctrl_pts: List[Gf.Vec3d] = [inner_p0]
@@ -877,7 +825,6 @@ class RopeBuilderController:
         # Sample the curve to approximate arc length for parameterization.
         num_samples = max(32, len(state.segment_paths) * 4)
         ts: List[float] = []
-        pts: List[Gf.Vec3d] = []
         cumulative: List[float] = []
 
         last_pos = None
@@ -886,7 +833,6 @@ class RopeBuilderController:
             t = float(i) / float(max(num_samples - 1, 1))
             pos, _ = catmull_point_and_tangent(t)
             ts.append(t)
-            pts.append(pos)
             if last_pos is not None:
                 length_accum += float((pos - last_pos).GetLength())
             cumulative.append(length_accum)
@@ -1018,23 +964,19 @@ class RopeBuilderController:
             if idx != 0 and idx != last_index:
                 cursor_mid += float(seg_len)
 
-        # Sanity check: fitted end segment tips should land on the anchors.
-        try:
-            tip0 = self._prim_world_pos(stage, f"{start_seg_path}/tip/attach") or self._prim_world_pos(
-                stage, f"{start_seg_path}/tip"
+        tip0 = self._prim_world_pos(stage, f"{start_seg_path}/tip/attach") or self._prim_world_pos(
+            stage, f"{start_seg_path}/tip"
+        )
+        tip1 = self._prim_world_pos(stage, f"{end_seg_path}/tip/attach") or self._prim_world_pos(
+            stage, f"{end_seg_path}/tip"
+        )
+        eps = 1e-4
+        if tip0 is not None and float((tip0 - p0).GetLength()) > eps:
+            carb.log_warn(
+                f"[RopeBuilder] Start attach mismatch after fit: {float((tip0 - p0).GetLength()):.6f} m"
             )
-            tip1 = self._prim_world_pos(stage, f"{end_seg_path}/tip/attach") or self._prim_world_pos(
-                stage, f"{end_seg_path}/tip"
-            )
-            eps = 1e-4
-            if tip0 is not None and float((tip0 - p0).GetLength()) > eps:
-                carb.log_warn(
-                    f"[RopeBuilder] Start attach mismatch after fit: {float((tip0 - p0).GetLength()):.6f} m"
-                )
-            if tip1 is not None and float((tip1 - p1).GetLength()) > eps:
-                carb.log_warn(f"[RopeBuilder] End attach mismatch after fit: {float((tip1 - p1).GetLength()):.6f} m")
-        except Exception:
-            pass
+        if tip1 is not None and float((tip1 - p1).GetLength()) > eps:
+            carb.log_warn(f"[RopeBuilder] End attach mismatch after fit: {float((tip1 - p1).GetLength()):.6f} m")
 
         # Update spline points from new segment poses, but keep anchors as user-authored
         # handles (do not overwrite them from segment endpoints here).
@@ -1055,13 +997,9 @@ class RopeBuilderController:
                 )
         state.dirty = False
 
-        # Update cached joint drive targets from the new pose so the edit UI stays in sync.
-        try:
-            inferred = self._infer_joint_targets_from_pose(stage, state.segment_paths, state.joint_paths)
-            for jp, axes in inferred.items():
-                state.joint_drive_targets[jp] = dict(axes)
-        except Exception as exc:
-            carb.log_warn(f"[RopeBuilder] Failed to infer joint targets after fitting to anchors: {exc}")
+        inferred = self._infer_joint_targets_from_pose(stage, state.segment_paths, state.joint_paths)
+        for jp, axes in inferred.items():
+            state.joint_drive_targets[jp] = dict(axes)
 
         # Store length info for UI (original is the designed cable length; current is the fitted path length).
         path_len = float(start_len + curve_len + end_len)
@@ -1104,8 +1042,7 @@ class RopeBuilderController:
                 try:
                     self.import_cable(path)
                     found.append(path)
-                except Exception:
-                    # ignore prims that look similar but aren't valid cables
+                except (RuntimeError, ValueError):
                     pass
 
         return found
@@ -1121,7 +1058,7 @@ class RopeBuilderController:
         if not had_span:
             try:
                 span = float(getattr(self._params, "rot_x_high", 30.0) - getattr(self._params, "rot_x_low", -30.0))
-            except Exception:
+            except (TypeError, ValueError):
                 span = DEFAULT_PARAMS.rot_limit_span
             self._params.rot_limit_span = max(span, 0.0)
 
@@ -1157,16 +1094,6 @@ class RopeBuilderController:
                 params.curve_extension >= 0.0,
             ]
         )
-
-    def _ensure_physics_scene(self, stage):
-        """Create a default PhysX scene if the stage does not have one."""
-        scene_prim = stage.GetPrimAtPath(self._physics_scene_path)
-        if scene_prim and scene_prim.IsValid():
-            return
-
-        scene = UsdPhysics.Scene.Define(stage, Sdf.Path(self._physics_scene_path))
-        scene.CreateGravityDirectionAttr().Set(Gf.Vec3f(0, 0, -1))
-        scene.CreateGravityMagnitudeAttr().Set(9.81)
 
     def _create_segment(
         self,
@@ -1356,7 +1283,7 @@ class RopeBuilderController:
         # In Isaac Sim 5.0 the update stream may pass an event object, not a float dt.
         try:
             dt = float(_dt) if _dt is not None else 0.0
-        except Exception:
+        except (TypeError, ValueError):
             # Fallback to an estimated frame dt so throttling still progresses.
             dt = 1.0 / 60.0
 
@@ -1618,7 +1545,7 @@ class RopeBuilderController:
         try:
             stage.MovePrim(anchor_path, dest_path)
             carb.log_info(f"[RopeBuilder] Moved anchor {anchor_path} to {dest_path}.")
-        except Exception as exc:
+        except RuntimeError as exc:
             carb.log_warn(f"[RopeBuilder] Failed to move anchor {anchor_path}: {exc}")
 
     def _make_unique_root_path(self, stage, base_name: str) -> str:
@@ -1816,5 +1743,5 @@ class RopeBuilderController:
             z_axis = Gf.Vec3d(0.0, 0.0, 1.0)
             rx, ry, rz = r.Decompose(x_axis, y_axis, z_axis)
             return float(rx), float(ry), float(rz)
-        except Exception:
+        except (TypeError, ValueError, RuntimeError):
             return 0.0, 0.0, 0.0
