@@ -3,7 +3,8 @@
 """Script Node: update the visual curve for an existing Cable Builder cable.
 
 Suggested inputs:
-    cablePath: string/token, required. Example: "/World/cable"
+    cablePath: string/token, optional. Example: "/World/cable".
+        If empty, the script uses the parent cable prim of the containing Action Graph.
     enabled: bool, default True
     deltaSeconds: float, default 0.0
 
@@ -17,7 +18,7 @@ This script intentionally does not import the Cable Builder extension.
 from __future__ import annotations
 
 import re
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import carb
 import omni.usd
@@ -28,33 +29,48 @@ CURVE_EXTENSION = 0.02
 CURVE_WIDTH_SCALE = 2.0
 UPDATE_HZ = 30.0
 _ACCUMULATED_SECONDS = 0.0
+_INITIAL_CURVE_STATES: Dict[str, Tuple[Optional[Vt.IntArray], Optional[Vt.Vec3fArray], Optional[Vt.FloatArray]]] = {}
+_PLAYING_ROOTS = set()
 
 
 def compute(db):
     global _ACCUMULATED_SECONDS
 
-    root_path = _input(db, "cablePath", "")
     enabled = bool(_input(db, "enabled", True))
     delta_seconds = max(float(_input(db, "deltaSeconds", 0.0) or 0.0), 0.0)
+    timeline_playing = _timeline_is_playing(delta_seconds)
 
     try:
         if not enabled:
             _ACCUMULATED_SECONDS = 0.0
             return _finish(db, False, "Curve update disabled.")
-        _ACCUMULATED_SECONDS += delta_seconds
-        if _ACCUMULATED_SECONDS < (1.0 / UPDATE_HZ):
-            return _finish(db, False, "Waiting for 30 Hz curve update interval.")
-        _ACCUMULATED_SECONDS = 0.0
-        if not root_path:
-            raise RuntimeError("Input cablePath is empty.")
 
         stage = omni.usd.get_context().get_stage()
         if not stage:
             raise RuntimeError("No open USD stage.")
 
+        root_path = _resolve_root_path(db, stage)
+
         segment_paths = _segment_paths(stage, root_path)
         if len(segment_paths) < 2:
             raise RuntimeError(f"Need at least two cable segments under {root_path}.")
+
+        if not timeline_playing:
+            _ACCUMULATED_SECONDS = 0.0
+            if root_path in _PLAYING_ROOTS:
+                _restore_curve_state(stage, root_path, segment_paths)
+                _PLAYING_ROOTS.discard(root_path)
+                return _finish(db, True, f"Restored initial curve for {root_path}.")
+            return _finish(db, False, "Timeline stopped; curve already restored.")
+
+        if root_path not in _PLAYING_ROOTS:
+            _INITIAL_CURVE_STATES[root_path] = _capture_curve_state(stage, root_path)
+            _PLAYING_ROOTS.add(root_path)
+
+        _ACCUMULATED_SECONDS += delta_seconds
+        if _ACCUMULATED_SECONDS < (1.0 / UPDATE_HZ):
+            return _finish(db, False, "Waiting for 30 Hz curve update interval.")
+        _ACCUMULATED_SECONDS = 0.0
 
         update_curve(stage, root_path, segment_paths)
         return _finish(db, True, f"Updated curve for {root_path}.")
@@ -120,6 +136,58 @@ def update_curve(stage, root_path: str, segment_paths: List[str]):
     curves.CreateWidthsAttr(Vt.FloatArray([max(radius * max(CURVE_WIDTH_SCALE, 0.0), 1e-4)]))
 
 
+def _capture_curve_state(stage, root_path: str):
+    curves = UsdGeom.BasisCurves.Get(stage, Sdf.Path(f"{root_path}/curve"))
+    if not curves:
+        return None, None, None
+
+    counts_attr = curves.GetCurveVertexCountsAttr()
+    points_attr = curves.GetPointsAttr()
+    widths_attr = curves.GetWidthsAttr()
+
+    counts = counts_attr.Get() if counts_attr and counts_attr.HasAuthoredValueOpinion() else None
+    points = points_attr.Get() if points_attr and points_attr.HasAuthoredValueOpinion() else None
+    widths = widths_attr.Get() if widths_attr and widths_attr.HasAuthoredValueOpinion() else None
+    return counts, points, widths
+
+
+def _restore_curve_state(stage, root_path: str, segment_paths: List[str]):
+    counts, points, widths = _INITIAL_CURVE_STATES.get(root_path, (None, None, None))
+    if counts is None or points is None:
+        update_curve(stage, root_path, segment_paths)
+        return
+
+    curves = UsdGeom.BasisCurves.Get(stage, Sdf.Path(f"{root_path}/curve"))
+    if not curves:
+        curves = UsdGeom.BasisCurves.Define(stage, Sdf.Path(f"{root_path}/curve"))
+    curves.CreateTypeAttr(UsdGeom.Tokens.cubic).Set(UsdGeom.Tokens.cubic)
+    curves.CreateBasisAttr(UsdGeom.Tokens.bspline).Set(UsdGeom.Tokens.bspline)
+    curves.CreateWrapAttr(UsdGeom.Tokens.pinned).Set(UsdGeom.Tokens.pinned)
+
+    counts_attr = curves.GetCurveVertexCountsAttr() or curves.CreateCurveVertexCountsAttr()
+    points_attr = curves.GetPointsAttr() or curves.CreatePointsAttr()
+    counts_attr.Set(Vt.IntArray(counts))
+    points_attr.Set(Vt.Vec3fArray(points))
+
+    widths_attr = curves.GetWidthsAttr()
+    if widths is None:
+        if widths_attr:
+            widths_attr.Clear()
+    else:
+        if not widths_attr:
+            widths_attr = curves.CreateWidthsAttr()
+        widths_attr.Set(Vt.FloatArray(widths))
+
+
+def _timeline_is_playing(delta_seconds: float) -> bool:
+    try:
+        import omni.timeline
+
+        return bool(omni.timeline.get_timeline_interface().is_playing())
+    except Exception:
+        return delta_seconds > 0.0
+
+
 def _segment_paths(stage, root_path: str) -> List[str]:
     root = stage.GetPrimAtPath(root_path)
     if not root or not root.IsValid():
@@ -141,6 +209,108 @@ def _segment_paths(stage, root_path: str) -> List[str]:
     if stage.GetPrimAtPath(end).IsValid():
         paths.append(end)
     return paths
+
+
+def _resolve_root_path(db, stage) -> str:
+    root_path = str(_input(db, "cablePath", "") or "")
+    if root_path:
+        return root_path
+
+    for candidate in _db_path_candidates(db):
+        root_path = _find_cable_ancestor(stage, candidate)
+        if root_path:
+            return root_path
+
+    raise RuntimeError("Input cablePath is empty and the containing Action Graph is not under a cable root.")
+
+
+def _db_path_candidates(db) -> List[str]:
+    candidates = []
+    seen = set()
+    objects = [db]
+    for attr_name in ("abi_node", "node", "_node", "graph", "_graph"):
+        obj = _maybe_call(getattr(db, attr_name, None))
+        if obj is not None:
+            objects.append(obj)
+
+    for obj in objects:
+        for method_name in ("get_prim_path", "get_path", "get_absolute_path", "get_graph_path", "get_path_to_graph"):
+            method = getattr(obj, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                path = _path_string(method())
+            except Exception:
+                path = ""
+            if path and path not in seen:
+                candidates.append(path)
+                seen.add(path)
+
+        for attr_name in ("prim_path", "path"):
+            path = _path_string(getattr(obj, attr_name, None))
+            if path and path not in seen:
+                candidates.append(path)
+                seen.add(path)
+
+        graph = _maybe_call(getattr(obj, "get_graph", None))
+        if graph is not None:
+            for method_name in ("get_prim_path", "get_path", "get_absolute_path", "get_graph_path", "get_path_to_graph"):
+                method = getattr(graph, method_name, None)
+                if not callable(method):
+                    continue
+                try:
+                    path = _path_string(method())
+                except Exception:
+                    path = ""
+                if path and path not in seen:
+                    candidates.append(path)
+                    seen.add(path)
+
+    return candidates
+
+
+def _maybe_call(value):
+    if callable(value):
+        try:
+            return value()
+        except Exception:
+            return value
+    return value
+
+
+def _path_string(value) -> str:
+    if value is None:
+        return ""
+    path = getattr(value, "pathString", None)
+    if path:
+        return str(path)
+    path = str(value)
+    return path if path.startswith("/") else ""
+
+
+def _find_cable_ancestor(stage, path_string: str) -> str:
+    try:
+        path = Sdf.Path(path_string)
+        if not path.IsPrimPath():
+            path = path.GetPrimPath()
+    except Exception:
+        return ""
+
+    while path.pathString not in ("", "/"):
+        prim = stage.GetPrimAtPath(path)
+        if prim and prim.IsValid() and _is_cable_root_prim(prim):
+            return path.pathString
+        path = path.GetParentPath()
+    return ""
+
+
+def _is_cable_root_prim(prim) -> bool:
+    regex = re.compile(r"segment_(\d+)$")
+    for child in prim.GetChildren():
+        name = child.GetName()
+        if name in ("segment_start", "segment_end") or regex.search(name):
+            return True
+    return False
 
 
 def _segment_lengths(stage, segment_paths: List[str]) -> List[float]:
