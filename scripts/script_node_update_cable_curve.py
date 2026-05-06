@@ -5,12 +5,7 @@
 Suggested inputs:
     cablePath: string/token, required. Example: "/World/cable"
     enabled: bool, default True
-    timelinePlaying: bool, default True
-    updateWhileStopped: bool, default False
-    frame: int, default 0
-    frameStride: int, default 1
-    curveExtension: float, default 0.02
-    curveWidthScale: float, default 2.0
+    deltaSeconds: float, default 0.0
 
 Suggested outputs:
     didUpdate: bool
@@ -29,23 +24,27 @@ import omni.usd
 from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 
+CURVE_EXTENSION = 0.02
+CURVE_WIDTH_SCALE = 2.0
+UPDATE_HZ = 30.0
+_ACCUMULATED_SECONDS = 0.0
+
+
 def compute(db):
+    global _ACCUMULATED_SECONDS
+
     root_path = _input(db, "cablePath", "")
     enabled = bool(_input(db, "enabled", True))
-    timeline_playing = bool(_input(db, "timelinePlaying", True))
-    update_while_stopped = bool(_input(db, "updateWhileStopped", False))
-    frame = int(_input(db, "frame", 0) or 0)
-    frame_stride = max(int(_input(db, "frameStride", 1) or 1), 1)
-    extension = float(_input(db, "curveExtension", 0.02) or 0.0)
-    width_scale = float(_input(db, "curveWidthScale", 2.0) or 2.0)
+    delta_seconds = max(float(_input(db, "deltaSeconds", 0.0) or 0.0), 0.0)
 
     try:
         if not enabled:
+            _ACCUMULATED_SECONDS = 0.0
             return _finish(db, False, "Curve update disabled.")
-        if not timeline_playing and not update_while_stopped:
-            return _finish(db, False, "Timeline stopped; curve update skipped.")
-        if frame % frame_stride != 0:
-            return _finish(db, False, f"Frame {frame} skipped by frameStride {frame_stride}.")
+        _ACCUMULATED_SECONDS += delta_seconds
+        if _ACCUMULATED_SECONDS < (1.0 / UPDATE_HZ):
+            return _finish(db, False, "Waiting for 30 Hz curve update interval.")
+        _ACCUMULATED_SECONDS = 0.0
         if not root_path:
             raise RuntimeError("Input cablePath is empty.")
 
@@ -57,7 +56,7 @@ def compute(db):
         if len(segment_paths) < 2:
             raise RuntimeError(f"Need at least two cable segments under {root_path}.")
 
-        update_curve(stage, root_path, segment_paths, extension, width_scale)
+        update_curve(stage, root_path, segment_paths)
         return _finish(db, True, f"Updated curve for {root_path}.")
     except Exception as exc:
         message = str(exc)
@@ -67,7 +66,7 @@ def compute(db):
         return False
 
 
-def update_curve(stage, root_path: str, segment_paths: List[str], extension: float, width_scale: float):
+def update_curve(stage, root_path: str, segment_paths: List[str]):
     curve_path = f"{root_path}/curve"
     curves = UsdGeom.BasisCurves.Get(stage, Sdf.Path(curve_path))
     if not curves:
@@ -81,7 +80,7 @@ def update_curve(stage, root_path: str, segment_paths: List[str], extension: flo
     first_pose = _world_frame(stage, segment_paths[0])
     last_pose = _world_frame(stage, segment_paths[-1])
     seg_lengths = _segment_lengths(stage, segment_paths)
-    extension = max(float(extension), 0.0)
+    extension = max(CURVE_EXTENSION, 0.0)
 
     if first_pose:
         pos, rot = first_pose
@@ -118,7 +117,7 @@ def update_curve(stage, root_path: str, segment_paths: List[str], extension: flo
 
     radius_attr = stage.GetPrimAtPath(f"{segment_paths[0]}/collision").GetAttribute("radius")
     radius = float(radius_attr.Get()) if radius_attr and radius_attr.HasAuthoredValueOpinion() else 0.01
-    curves.CreateWidthsAttr(Vt.FloatArray([max(radius * max(width_scale, 0.0), 1e-4)]))
+    curves.CreateWidthsAttr(Vt.FloatArray([max(radius * max(CURVE_WIDTH_SCALE, 0.0), 1e-4)]))
 
 
 def _segment_paths(stage, root_path: str) -> List[str]:
