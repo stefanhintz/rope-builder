@@ -745,11 +745,9 @@ class RopeBuilderController:
 
         start_inner_local = start_col_local + Gf.Vec3d(0.5 * start_len, 0.0, 0.0)
         end_inner_local = end_col_local + Gf.Vec3d(-0.5 * end_len, 0.0, 0.0)
-        start_to_inner = float(start_inner_local[0] - start_attach_local[0])
-        end_to_inner = float(end_attach_local[0] - end_inner_local[0])
 
-        inner_p0 = p0 + dir0 * start_to_inner
-        inner_p1 = p1 - dir1 * end_to_inner
+        inner_p0 = p0 + Gf.Rotation(r0).TransformDir(start_inner_local - start_attach_local)
+        inner_p1 = p1 + Gf.Rotation(r1).TransformDir(end_inner_local - end_attach_local)
 
         delta = inner_p1 - inner_p0
         straight_dist = delta.GetLength()

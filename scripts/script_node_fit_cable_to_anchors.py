@@ -114,8 +114,8 @@ def fit_cable_to_anchors(
 
     start_inner = start_col + Gf.Vec3d(0.5 * start_len, 0.0, 0.0)
     end_inner = end_col + Gf.Vec3d(-0.5 * end_len, 0.0, 0.0)
-    inner_p0 = p0 + dir0 * float(start_inner[0] - start_attach[0])
-    inner_p1 = p1 - dir1 * float(end_attach[0] - end_inner[0])
+    inner_p0 = p0 + Gf.Rotation(r0).TransformDir(start_inner - start_attach)
+    inner_p1 = p1 + Gf.Rotation(r1).TransformDir(end_inner - end_attach)
 
     delta = inner_p1 - inner_p0
     straight_dist = float(delta.GetLength())
@@ -477,7 +477,7 @@ def update_curve(stage, root_path: str, segment_paths: List[str]):
     if first_pose:
         pos, rot = first_pose
         dir_x = Gf.Rotation(rot).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
-        tip = _world_pos(stage, f"{segment_paths[0]}/tip")
+        tip = _world_pos(stage, f"{segment_paths[0]}/tip/attach") or _world_pos(stage, f"{segment_paths[0]}/tip")
         if tip is None:
             tip = pos - dir_x * (float(seg_lengths[0]) * 0.5)
         points.append(tip - dir_x * extension)
@@ -490,7 +490,7 @@ def update_curve(stage, root_path: str, segment_paths: List[str]):
     if last_pose:
         pos, rot = last_pose
         dir_x = Gf.Rotation(rot).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
-        tip = _world_pos(stage, f"{segment_paths[-1]}/tip")
+        tip = _world_pos(stage, f"{segment_paths[-1]}/tip/attach") or _world_pos(stage, f"{segment_paths[-1]}/tip")
         if tip is None:
             tip = pos + dir_x * (float(seg_lengths[-1]) * 0.5)
         points.append(tip + dir_x * extension)
