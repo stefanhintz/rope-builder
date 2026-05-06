@@ -184,6 +184,8 @@ class RopeBuilderController:
             prev_len = seg_len
             cursor += seg_len
 
+        self._disable_neighbor_collisions(stage, segment_paths)
+
         curve_path = f"{root_path}/curve"
         anchor_start = f"{root_path}/anchor_start"
         anchor_end = f"{root_path}/anchor_end"
@@ -247,6 +249,8 @@ class RopeBuilderController:
             segment_paths = segment_paths + [end_path]
         if len(segment_paths) < 2:
             raise RuntimeError("Need at least 2 segments to import a cable.")
+
+        self._disable_neighbor_collisions(stage, segment_paths)
 
         # Joints may not be direct children in some authored cables, so search under the root.
         joint_regex = re.compile(r"joint_(\d+)$")
@@ -1193,6 +1197,16 @@ class RopeBuilderController:
             limits_out[axis] = (low, high)
 
         return str(joint_path), limits_out
+
+    def _disable_neighbor_collisions(self, stage, segment_paths: List[str]):
+        for first_path, second_path in zip(segment_paths, segment_paths[1:]):
+            first = stage.GetPrimAtPath(first_path)
+            second = stage.GetPrimAtPath(second_path)
+            if not first or not first.IsValid() or not second or not second.IsValid():
+                continue
+
+            filtered_pairs = UsdPhysics.FilteredPairsAPI.Apply(first)
+            filtered_pairs.CreateFilteredPairsRel().AddTarget(Sdf.Path(second_path))
 
     def _ensure_curve_prim(self, stage, state: CableState):
         curve_prim = UsdGeom.BasisCurves.Get(stage, Sdf.Path(state.curve_path))
