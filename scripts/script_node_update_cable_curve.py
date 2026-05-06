@@ -28,44 +28,47 @@ from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 CURVE_EXTENSION = 0.02
 CURVE_WIDTH_SCALE = 2.0
 UPDATE_HZ = 30.0
-_ACCUMULATED_SECONDS = 0.0
+_ACCUMULATED_SECONDS = {}
 _PLAYING_ROOTS = set()
+_UPDATE_SUBSCRIPTIONS = {}
 
 
 def compute(db):
-    global _ACCUMULATED_SECONDS
-
     enabled = bool(_input(db, "enabled", True))
     delta_seconds = max(float(_input(db, "deltaSeconds", 0.0) or 0.0), 0.0)
     timeline_playing = _timeline_is_playing(delta_seconds)
 
     try:
-        if not enabled:
-            _ACCUMULATED_SECONDS = 0.0
-            return _finish(db, False, "Curve update disabled.")
-
         stage = omni.usd.get_context().get_stage()
         if not stage:
             raise RuntimeError("No open USD stage.")
 
         root_path = _resolve_root_path(db, stage)
 
+        if not enabled:
+            _disable_update_subscription(root_path)
+            _ACCUMULATED_SECONDS[root_path] = 0.0
+            _PLAYING_ROOTS.discard(root_path)
+            return _finish(db, False, "Curve update disabled.")
+
         segment_paths = _segment_paths(stage, root_path)
         if len(segment_paths) < 2:
             raise RuntimeError(f"Need at least two cable segments under {root_path}.")
 
+        _ensure_update_subscription(root_path)
+
         if not timeline_playing:
-            _ACCUMULATED_SECONDS = 0.0
+            _ACCUMULATED_SECONDS[root_path] = 0.0
             update_curve(stage, root_path, segment_paths)
             _PLAYING_ROOTS.discard(root_path)
-            return _finish(db, True, f"Fitted curve after timeline stop for {root_path}.")
+            return _finish(db, True, f"Fitted curve while timeline is stopped for {root_path}.")
 
         _PLAYING_ROOTS.add(root_path)
 
-        _ACCUMULATED_SECONDS += delta_seconds
-        if _ACCUMULATED_SECONDS < (1.0 / UPDATE_HZ):
+        _ACCUMULATED_SECONDS[root_path] = _ACCUMULATED_SECONDS.get(root_path, 0.0) + delta_seconds
+        if _ACCUMULATED_SECONDS[root_path] < (1.0 / UPDATE_HZ):
             return _finish(db, False, "Waiting for 30 Hz curve update interval.")
-        _ACCUMULATED_SECONDS = 0.0
+        _ACCUMULATED_SECONDS[root_path] = 0.0
 
         update_curve(stage, root_path, segment_paths)
         return _finish(db, True, f"Updated curve for {root_path}.")
@@ -83,13 +86,67 @@ def cleanup(db):
         if not stage:
             return
         root_path = _resolve_root_path(db, stage)
+        _disable_update_subscription(root_path)
         segment_paths = _segment_paths(stage, root_path)
         if len(segment_paths) >= 2:
             update_curve(stage, root_path, segment_paths)
             _PLAYING_ROOTS.discard(root_path)
+            _ACCUMULATED_SECONDS.pop(root_path, None)
             carb.log_info(f"[CableCurveNode] Fitted curve during cleanup for {root_path}.")
     except Exception as exc:
         carb.log_warn(f"[CableCurveNode] Cleanup curve fit failed: {exc}")
+
+
+def _ensure_update_subscription(root_path: str):
+    if root_path in _UPDATE_SUBSCRIPTIONS:
+        return
+    try:
+        import omni.kit.app
+
+        stream = omni.kit.app.get_app().get_update_event_stream()
+        _UPDATE_SUBSCRIPTIONS[root_path] = stream.create_subscription_to_pop(
+            lambda event, rp=root_path: _on_app_update(rp, event)
+        )
+        carb.log_info(f"[CableCurveNode] Subscribed app updates for {root_path}.")
+    except Exception as exc:
+        carb.log_warn(f"[CableCurveNode] Could not subscribe to app updates for {root_path}: {exc}")
+
+
+def _disable_update_subscription(root_path: str):
+    subscription = _UPDATE_SUBSCRIPTIONS.pop(root_path, None)
+    if subscription:
+        subscription.unsubscribe()
+
+
+def _on_app_update(root_path: str, event):
+    stage = omni.usd.get_context().get_stage()
+    if not stage:
+        return
+
+    try:
+        segment_paths = _segment_paths(stage, root_path)
+    except Exception as exc:
+        carb.log_warn(f"[CableCurveNode] App update curve fit failed for {root_path}: {exc}")
+        return
+    if len(segment_paths) < 2:
+        return
+
+    timeline_playing = _timeline_is_playing(0.0)
+    if not timeline_playing:
+        if root_path in _PLAYING_ROOTS:
+            update_curve(stage, root_path, segment_paths)
+            _PLAYING_ROOTS.discard(root_path)
+            _ACCUMULATED_SECONDS[root_path] = 0.0
+            carb.log_info(f"[CableCurveNode] Fitted curve after timeline stop for {root_path}.")
+        return
+
+    _PLAYING_ROOTS.add(root_path)
+    dt = _event_delta_seconds(event)
+    _ACCUMULATED_SECONDS[root_path] = _ACCUMULATED_SECONDS.get(root_path, 0.0) + dt
+    if _ACCUMULATED_SECONDS[root_path] < (1.0 / UPDATE_HZ):
+        return
+    _ACCUMULATED_SECONDS[root_path] = 0.0
+    update_curve(stage, root_path, segment_paths)
 
 
 def update_curve(stage, root_path: str, segment_paths: List[str]):
@@ -153,6 +210,13 @@ def _timeline_is_playing(delta_seconds: float) -> bool:
         return bool(omni.timeline.get_timeline_interface().is_playing())
     except Exception:
         return delta_seconds > 0.0
+
+
+def _event_delta_seconds(event) -> float:
+    try:
+        return max(float(event) if event is not None else 0.0, 0.0)
+    except (TypeError, ValueError):
+        return 1.0 / 60.0
 
 
 def _segment_paths(stage, root_path: str) -> List[str]:
