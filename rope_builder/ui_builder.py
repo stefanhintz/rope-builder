@@ -87,6 +87,7 @@ class UIBuilder:
         self._fit_anchors_btn = None
         self._add_handle_btn = None
         self._cable_name_model = ui.SimpleStringModel("cable")
+        self._keep_length_model = ui.SimpleBoolModel(False)
         self._active_path_model = ui.SimpleStringModel("")
         self._active_tree_model = _CableTreeModel()
         self._active_tree_view = None
@@ -191,6 +192,9 @@ class UIBuilder:
                     self._toggle_vis_btn = ui.Button(
                         "Show collisions", clicked_fn=self._on_toggle_visibility, enabled=False
                     )
+                with ui.HStack(height=0, spacing=8):
+                    ui.CheckBox(model=self._keep_length_model)
+                    ui.Label("Keep exact length", style=get_style())
 
                 ui.Separator(height=6)
                 ui.Label("Cable length", style=get_style())
@@ -429,6 +433,13 @@ class UIBuilder:
             return model.get_value_as_string()
         return default
 
+    def _model_bool(self, model) -> bool:
+        if hasattr(model, "as_bool"):
+            return bool(model.as_bool)
+        if hasattr(model, "get_value_as_bool"):
+            return bool(model.get_value_as_bool())
+        return False
+
     def _on_reset_joint_axis(self, joint_index: int, axis: str):
         """Reset a single axis on one joint to zero within limits."""
         data = {info.get("index"): info for info in self._controller.get_joint_control_data()}
@@ -447,7 +458,8 @@ class UIBuilder:
             return
 
         try:
-            result = self._controller.fit_rope_to_anchors()
+            keep_length = self._model_bool(self._keep_length_model)
+            result = self._controller.fit_rope_to_anchors(keep_exact_length=keep_length)
         except (RuntimeError, ValueError) as exc:
             self._update_status(str(exc), warn=True)
             return
@@ -482,7 +494,10 @@ class UIBuilder:
             warn = True
 
         if not messages:
-            messages.append("Cable pose fitted between anchors.")
+            if self._model_bool(self._keep_length_model):
+                messages.append("Cable pose fitted at exact length.")
+            else:
+                messages.append("Cable pose fitted between anchors.")
 
         self._update_status(" ".join(messages), warn=warn)
 

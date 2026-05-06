@@ -670,7 +670,9 @@ class RopeBuilderController:
                 img = UsdGeom.Imageable(prim)
                 img.MakeVisible() if visible else img.MakeInvisible()
 
-    def fit_rope_to_anchors(self, root_path: Optional[str] = None) -> Optional[Tuple[float, float]]:
+    def fit_rope_to_anchors(
+        self, root_path: Optional[str] = None, keep_exact_length: bool = False
+    ) -> Optional[Tuple[float, float]]:
         """Repose the cable along a geometric curve between anchors in edit mode.
 
         This preserves per-segment lengths, ignores joint limits, and may introduce
@@ -759,6 +761,7 @@ class RopeBuilderController:
         # Collect control points for the interior curve: inner-start tip, any shape
         # handles, inner-end tip.
         ctrl_pts: List[Gf.Vec3d] = [inner_p0]
+        handle_count = 0
         for hpath in getattr(state, "handle_paths", []) or []:
             prim = stage.GetPrimAtPath(hpath)
             if not prim or not prim.IsValid():
@@ -766,83 +769,143 @@ class RopeBuilderController:
             xf = UsdGeom.Xformable(prim)
             m = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
             ctrl_pts.append(Gf.Vec3d(m.ExtractTranslation()))
+            handle_count += 1
         ctrl_pts.append(inner_p1)
 
-        # For Catmull-Rom, create extended endpoint samples to respect anchor tangents.
-        n_ctrl = len(ctrl_pts)
-        if n_ctrl < 2:
-            ctrl_pts = [inner_p0, inner_p1]
-            n_ctrl = 2
-
-        ext_pts: List[Gf.Vec3d] = [Gf.Vec3d(0.0)] * (n_ctrl + 2)
-        for i, p in enumerate(ctrl_pts):
-            ext_pts[i + 1] = p
-        ext_pts[0] = ctrl_pts[0] - dir0 * tangent_scale
-        ext_pts[-1] = ctrl_pts[-1] + dir1 * tangent_scale
-
-        num_segs = max(n_ctrl - 1, 1)
-
-        def catmull_point_and_tangent(u: float) -> Tuple[Gf.Vec3d, Gf.Vec3d]:
+        def make_catmull_sampler(points: List[Gf.Vec3d], scale: float):
             """Evaluate Catmull-Rom spline point and tangent for u in [0, 1]."""
-            if num_segs <= 0:
-                return Gf.Vec3d(ctrl_pts[0]), Gf.Vec3d(dir0)
+            n_ctrl = len(points)
+            if n_ctrl < 2:
+                points = [inner_p0, inner_p1]
+                n_ctrl = 2
 
-            u = max(0.0, min(1.0, float(u)))
-            s = u * float(num_segs)
-            seg = int(s)
-            if seg >= num_segs:
-                seg = num_segs - 1
-                t = 1.0
-            else:
-                t = s - float(seg)
+            ext_pts: List[Gf.Vec3d] = [Gf.Vec3d(0.0)] * (n_ctrl + 2)
+            for i, p in enumerate(points):
+                ext_pts[i + 1] = p
+            ext_pts[0] = points[0] - dir0 * scale
+            ext_pts[-1] = points[-1] + dir1 * scale
 
-            i = seg  # local segment index between ctrl_pts[i] and ctrl_pts[i+1]
-            P0 = ext_pts[i]
-            P1 = ext_pts[i + 1]
-            P2 = ext_pts[i + 2]
-            P3 = ext_pts[i + 3]
+            num_segs = max(n_ctrl - 1, 1)
 
-            t2 = t * t
-            t3 = t2 * t
+            def sample(u: float) -> Tuple[Gf.Vec3d, Gf.Vec3d]:
+                u = max(0.0, min(1.0, float(u)))
+                s = u * float(num_segs)
+                seg = int(s)
+                if seg >= num_segs:
+                    seg = num_segs - 1
+                    t = 1.0
+                else:
+                    t = s - float(seg)
 
-            # Standard Catmull-Rom position.
-            pos = 0.5 * (
-                (2.0 * P1)
-                + (-P0 + P2) * t
-                + (2.0 * P0 - 5.0 * P1 + 4.0 * P2 - P3) * t2
-                + (-P0 + 3.0 * P1 - 3.0 * P2 + P3) * t3
+                p0c = ext_pts[seg]
+                p1c = ext_pts[seg + 1]
+                p2c = ext_pts[seg + 2]
+                p3c = ext_pts[seg + 3]
+                t2 = t * t
+                t3 = t2 * t
+
+                pos = 0.5 * (
+                    (2.0 * p1c)
+                    + (-p0c + p2c) * t
+                    + (2.0 * p0c - 5.0 * p1c + 4.0 * p2c - p3c) * t2
+                    + (-p0c + 3.0 * p1c - 3.0 * p2c + p3c) * t3
+                )
+                dpos = 0.5 * (
+                    (-p0c + p2c)
+                    + (2.0 * (2.0 * p0c - 5.0 * p1c + 4.0 * p2c - p3c)) * t
+                    + (3.0 * (-p0c + 3.0 * p1c - 3.0 * p2c + p3c)) * t2
+                )
+
+                if dpos.GetLength() < 1e-6:
+                    dpos = Gf.Vec3d(dir0)
+                else:
+                    dpos.Normalize()
+                return pos, dpos
+
+            return sample
+
+        def sample_curve(catmull_point_and_tangent):
+            num_samples = max(32, len(state.segment_paths) * 4)
+            ts_out: List[float] = []
+            cumulative_out: List[float] = []
+            last_pos = None
+            length_accum = 0.0
+            for i in range(num_samples):
+                t = float(i) / float(max(num_samples - 1, 1))
+                pos, _ = catmull_point_and_tangent(t)
+                ts_out.append(t)
+                if last_pos is not None:
+                    length_accum += float((pos - last_pos).GetLength())
+                cumulative_out.append(length_accum)
+                last_pos = pos
+            return float(length_accum), ts_out, cumulative_out
+
+        def curve_length(points: List[Gf.Vec3d], scale: float) -> float:
+            return sample_curve(make_catmull_sampler(points, scale))[0]
+
+        mid_rope_len = float(rope_len - start_len - end_len)
+        if keep_exact_length and mid_rope_len + 1e-4 < straight_dist:
+            raise ValueError(
+                f"Cannot keep exact length: anchors need {straight_dist + start_len + end_len:.3f} m, "
+                f"but cable length is {rope_len:.3f} m."
             )
 
-            # Derivative for tangent.
-            dpos = 0.5 * (
-                (-P0 + P2)
-                + (2.0 * (2.0 * P0 - 5.0 * P1 + 4.0 * P2 - P3)) * t
-                + (3.0 * (-P0 + 3.0 * P1 - 3.0 * P2 + P3)) * t2
-            )
-
-            if dpos.GetLength() < 1e-6:
-                dpos = Gf.Vec3d(dir0)
+        if keep_exact_length and handle_count == 0:
+            if mid_rope_len <= straight_dist + 1e-4:
+                ctrl_pts = [inner_p0, inner_p1]
+                tangent_scale = 0.0
             else:
-                dpos.Normalize()
-            return pos, dpos
+                chord_dir = Gf.Vec3d(delta)
+                if chord_dir.GetLength() < 1e-6:
+                    chord_dir = Gf.Vec3d(1.0, 0.0, 0.0)
+                else:
+                    chord_dir.Normalize()
+                normal = self._cross(chord_dir, Gf.Vec3d(0.0, 0.0, 1.0))
+                if normal.GetLength() < 1e-6:
+                    normal = self._cross(chord_dir, Gf.Vec3d(0.0, 1.0, 0.0))
+                normal.Normalize()
+                midpoint = (inner_p0 + inner_p1) * 0.5
 
-        # Sample the curve to approximate arc length for parameterization.
-        num_samples = max(32, len(state.segment_paths) * 4)
-        ts: List[float] = []
-        cumulative: List[float] = []
+                def sag_points(height: float) -> List[Gf.Vec3d]:
+                    return [inner_p0, midpoint + normal * height, inner_p1]
 
-        last_pos = None
-        length_accum = 0.0
-        for i in range(num_samples):
-            t = float(i) / float(max(num_samples - 1, 1))
-            pos, _ = catmull_point_and_tangent(t)
-            ts.append(t)
-            if last_pos is not None:
-                length_accum += float((pos - last_pos).GetLength())
-            cumulative.append(length_accum)
-            last_pos = pos
+                low = 0.0
+                high = max(mid_rope_len, straight_dist, 1e-3) * 0.5
+                while curve_length(sag_points(high), 0.0) < mid_rope_len:
+                    high *= 2.0
 
-        curve_len = float(length_accum)
+                for _ in range(32):
+                    mid = (low + high) * 0.5
+                    if curve_length(sag_points(mid), 0.0) < mid_rope_len:
+                        low = mid
+                    else:
+                        high = mid
+                ctrl_pts = sag_points(high)
+                tangent_scale = 0.0
+        elif keep_exact_length:
+            min_len = curve_length(ctrl_pts, 0.0)
+            if min_len > mid_rope_len + 1e-4:
+                raise ValueError(
+                    f"Cannot keep exact length: handle path is {min_len + start_len + end_len:.3f} m, "
+                    f"but cable length is {rope_len:.3f} m."
+                )
+            high = max(tangent_scale, 1e-3)
+            while curve_length(ctrl_pts, high) < mid_rope_len and high < max(mid_rope_len, 1.0) * 16.0:
+                high *= 2.0
+            if curve_length(ctrl_pts, high) < mid_rope_len - 1e-4:
+                raise ValueError("Cannot keep exact length with the current anchor directions and handles.")
+
+            low = 0.0
+            for _ in range(32):
+                mid = (low + high) * 0.5
+                if curve_length(ctrl_pts, mid) < mid_rope_len:
+                    low = mid
+                else:
+                    high = mid
+            tangent_scale = high
+
+        catmull_point_and_tangent = make_catmull_sampler(ctrl_pts, tangent_scale)
+        curve_len, ts, cumulative = sample_curve(catmull_point_and_tangent)
         use_straight = curve_len <= 1e-6
         if use_straight:
             # Degenerate curve; fall back to straight line between anchors.
@@ -885,7 +948,6 @@ class RopeBuilderController:
         # Lay out segments:
         # - End segments match anchors exactly (for plug alignment).
         # - Interior segments follow the sampled interior curve.
-        mid_rope_len = float(rope_len - start_len - end_len)
         cursor_mid = 0.0
         last_index = len(state.segment_paths) - 1
 
@@ -1401,6 +1463,14 @@ class RopeBuilderController:
         m_world = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
         inv = m_world.GetInverse()
         return [Gf.Vec3f(inv.Transform(p)) for p in world_pts]
+
+    @staticmethod
+    def _cross(a: Gf.Vec3d, b: Gf.Vec3d) -> Gf.Vec3d:
+        return Gf.Vec3d(
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        )
 
     def _apply_edit_pose_from_targets(self, state: CableState):
         """Reposition segments in edit mode based on current joint drive targets."""
