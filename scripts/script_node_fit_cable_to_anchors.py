@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Script Node: fit an existing Cable Builder cable to anchors and handles.
+"""Script Node: fit a Cable Builder cable to anchors and handles.
 
 Suggested inputs:
-    cablePath: string/token, optional. Example: "/World/cable".
-        If empty, the script uses the parent cable prim of the containing Action Graph.
+    cablePath: string/token. Example: "/World/cable".
     keepExactLength: bool, default True
 
 Suggested outputs:
@@ -17,7 +16,12 @@ Suggested outputs:
     stretchLength: float
     message: string
 
-This script intentionally does not import the Cable Builder extension.
+Design note:
+    This script intentionally does not import the Cable Builder extension.
+    It is a one-shot fit/restore action, suitable for an event node fired when
+    simulation stops. The update node handles playback-only curve refreshes.
+    Inferring cablePath from graph internals was rejected because explicit inputs
+    are easier to diagnose in customer scenes.
 """
 
 from __future__ import annotations
@@ -35,18 +39,22 @@ CURVE_WIDTH_SCALE = 2.0
 LENGTH_EPS = 1e-4
 
 
+class CableFitNodeError(RuntimeError):
+    pass
+
+
 def compute(db):
     keep_exact_length = bool(_input(db, "keepExactLength", True))
     try:
         stage = omni.usd.get_context().get_stage()
         if not stage:
-            raise RuntimeError("No open USD stage.")
+            raise CableFitNodeError("No open USD stage.")
 
-        root_path = _resolve_root_path(db, stage)
+        root_path = _resolve_root_path(db)
 
         segment_paths = _segment_paths(stage, root_path)
         if len(segment_paths) < 2:
-            raise RuntimeError(f"Need at least two cable segments under {root_path}.")
+            raise CableFitNodeError(f"Need at least two cable segments under {root_path}.")
 
         rope_len, path_len, straight_possible, has_slack, slack_len, stretch_len = fit_cable_to_anchors(
             stage, root_path, segment_paths, keep_exact_length
@@ -69,7 +77,7 @@ def compute(db):
         _output(db, "stretchLength", stretch_len)
         _output(db, "message", message)
         return True
-    except Exception as exc:
+    except CableFitNodeError as exc:
         message = str(exc)
         carb.log_warn(f"[CableFitNode] {message}")
         _output(db, "success", False)
@@ -83,14 +91,14 @@ def fit_cable_to_anchors(
     start_pose = _world_frame(stage, f"{root_path}/anchor_start")
     end_pose = _world_frame(stage, f"{root_path}/anchor_end")
     if not start_pose or not end_pose:
-        raise RuntimeError("Missing anchor_start or anchor_end.")
+        raise CableFitNodeError("Missing anchor_start or anchor_end.")
 
     p0, r0 = start_pose
     p1, r1 = end_pose
     seg_lengths = _segment_lengths(stage, segment_paths)
     rope_len = float(sum(seg_lengths))
     if rope_len <= 1e-6:
-        raise RuntimeError("Cable length is zero.")
+        raise CableFitNodeError("Cable length is zero.")
 
     dir0 = _safe_dir(Gf.Rotation(r0).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0)))
     dir1 = _safe_dir(Gf.Rotation(r1).TransformDir(Gf.Vec3d(1.0, 0.0, 0.0)))
@@ -122,7 +130,7 @@ def fit_cable_to_anchors(
     mid_rope_len = float(rope_len - start_len - end_len)
     straight_path_len = float(start_len + straight_dist + end_len)
     if keep_exact_length and mid_rope_len + LENGTH_EPS < straight_dist:
-        raise RuntimeError(
+        raise CableFitNodeError(
             f"Cannot keep exact length: anchors need {straight_dist + start_len + end_len:.3f} m, "
             f"but cable length is {rope_len:.3f} m."
         )
@@ -199,7 +207,7 @@ def fit_cable_to_anchors(
 def _segment_paths(stage, root_path: str) -> List[str]:
     root = stage.GetPrimAtPath(root_path)
     if not root or not root.IsValid():
-        raise RuntimeError(f"Root prim not found: {root_path}")
+        raise CableFitNodeError(f"Root prim not found: {root_path}")
 
     numbered = []
     regex = re.compile(r"segment_(\d+)$")
@@ -219,106 +227,11 @@ def _segment_paths(stage, root_path: str) -> List[str]:
     return paths
 
 
-def _resolve_root_path(db, stage) -> str:
+def _resolve_root_path(db) -> str:
     root_path = str(_input(db, "cablePath", "") or "")
     if root_path:
         return root_path
-
-    for candidate in _db_path_candidates(db):
-        root_path = _find_cable_ancestor(stage, candidate)
-        if root_path:
-            return root_path
-
-    raise RuntimeError("Input cablePath is empty and the containing Action Graph is not under a cable root.")
-
-
-def _db_path_candidates(db) -> List[str]:
-    candidates = []
-    seen = set()
-    objects = [db]
-    for attr_name in ("abi_node", "node", "_node", "graph", "_graph"):
-        obj = _maybe_call(getattr(db, attr_name, None))
-        if obj is not None:
-            objects.append(obj)
-
-    for obj in objects:
-        for method_name in ("get_prim_path", "get_path", "get_absolute_path", "get_graph_path", "get_path_to_graph"):
-            method = getattr(obj, method_name, None)
-            if not callable(method):
-                continue
-            try:
-                path = _path_string(method())
-            except Exception:
-                path = ""
-            if path and path not in seen:
-                candidates.append(path)
-                seen.add(path)
-
-        for attr_name in ("prim_path", "path"):
-            path = _path_string(getattr(obj, attr_name, None))
-            if path and path not in seen:
-                candidates.append(path)
-                seen.add(path)
-
-        graph = _maybe_call(getattr(obj, "get_graph", None))
-        if graph is not None:
-            for method_name in ("get_prim_path", "get_path", "get_absolute_path", "get_graph_path", "get_path_to_graph"):
-                method = getattr(graph, method_name, None)
-                if not callable(method):
-                    continue
-                try:
-                    path = _path_string(method())
-                except Exception:
-                    path = ""
-                if path and path not in seen:
-                    candidates.append(path)
-                    seen.add(path)
-
-    return candidates
-
-
-def _maybe_call(value):
-    if callable(value):
-        try:
-            return value()
-        except Exception:
-            return value
-    return value
-
-
-def _path_string(value) -> str:
-    if value is None:
-        return ""
-    path = getattr(value, "pathString", None)
-    if path:
-        return str(path)
-    path = str(value)
-    return path if path.startswith("/") else ""
-
-
-def _find_cable_ancestor(stage, path_string: str) -> str:
-    try:
-        path = Sdf.Path(path_string)
-        if not path.IsPrimPath():
-            path = path.GetPrimPath()
-    except Exception:
-        return ""
-
-    while path.pathString not in ("", "/"):
-        prim = stage.GetPrimAtPath(path)
-        if prim and prim.IsValid() and _is_cable_root_prim(prim):
-            return path.pathString
-        path = path.GetParentPath()
-    return ""
-
-
-def _is_cable_root_prim(prim) -> bool:
-    regex = re.compile(r"segment_(\d+)$")
-    for child in prim.GetChildren():
-        name = child.GetName()
-        if name in ("segment_start", "segment_end") or regex.search(name):
-            return True
-    return False
+    raise CableFitNodeError("Input cablePath is required.")
 
 
 def _segment_lengths(stage, segment_paths: List[str]) -> List[float]:
@@ -385,14 +298,14 @@ def _adjust_curve_to_length(points, handle_count, inner_p0, inner_p1, dir0, dir1
 
     min_len = _curve_length(points, dir0, dir1, 0.0)
     if min_len > target_len + LENGTH_EPS:
-        raise RuntimeError("Cannot keep exact length: handle path is longer than the cable.")
+        raise CableFitNodeError("Cannot keep exact length: handle path is longer than the cable.")
 
     low = 0.0
     high = max(scale, 1e-3)
     while _curve_length(points, dir0, dir1, high) < target_len and high < max(target_len, 1.0) * 16.0:
         high *= 2.0
     if _curve_length(points, dir0, dir1, high) < target_len - LENGTH_EPS:
-        raise RuntimeError("Cannot keep exact length with the current handles and anchor directions.")
+        raise CableFitNodeError("Cannot keep exact length with the current handles and anchor directions.")
 
     for _ in range(32):
         mid = (low + high) * 0.5
