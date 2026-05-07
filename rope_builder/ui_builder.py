@@ -210,6 +210,9 @@ class UIBuilder:
                 self._build_float_field("Length (m)", "length", min_value=0.1, step=0.05)
                 self._build_float_field("Radius (m)", "radius", min_value=0.001, step=0.001)
                 self._build_float_field("Spline extend (m)", "curve_extension", min_value=0.0, step=0.005)
+                self._build_float_field(
+                    "Corner start (deg)", "curve_corner_start_angle", min_value=0.0, step=1.0, max_value=90.0
+                )
                 self._build_segment_slider("Segments", "segment_count", min_value=2)
                 self._build_float_field("Total mass (kg)", "mass", min_value=0.01, step=0.05)
 

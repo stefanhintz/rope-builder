@@ -23,6 +23,7 @@ Rejected alternative: a flexible solver/config layer; it would add knobs without
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -35,6 +36,8 @@ from pxr import Gf, PhysxSchema, Sdf, Usd, UsdGeom, UsdPhysics, Vt
 # Rotational and translational axes used by D6 joints.
 ROT_AXES = ("rotX", "rotY", "rotZ")
 TRANS_AXES = ("transX", "transY", "transZ")
+SHARP_CURVE_HARD_ANGLE_DEG = 90.0
+SHARP_CURVE_MAX_DUPLICATES = 5
 
 
 @dataclass
@@ -57,6 +60,7 @@ class RopeParameters:
     drive_max_force: float = 200.0
     curve_extension: float = 0.02  # meters to extend spline beyond first/last collider
     curve_width_scale: float = 2.0  # multiplier for visual curve width (radius * scale)
+    curve_corner_start_angle: float = 60.0  # degrees; 0 disables sharp-corner visual tightening
 
     @property
     def segment_length(self) -> float:
@@ -121,7 +125,18 @@ class RopeBuilderController:
         self._params = params
         self._ensure_parameter_defaults()
         self._sync_rot_limits_from_span()
+        self._apply_visual_params_to_active_cable()
         carb.log_info(f"[RopeBuilder] Updated parameters: {self._params}")
+
+    def _apply_visual_params_to_active_cable(self):
+        state = self._cables.get(self._active_path)
+        if not state:
+            return
+
+        state.params.curve_extension = self._params.curve_extension
+        state.params.curve_width_scale = self._params.curve_width_scale
+        state.params.curve_corner_start_angle = self._params.curve_corner_start_angle
+        self._update_curve_points(state)
 
     def active_cable_path(self) -> Optional[str]:
         return self._active_path
@@ -1156,6 +1171,7 @@ class RopeBuilderController:
                 params.drive_damping >= 0.0,
                 params.drive_max_force >= 0.0,
                 params.curve_extension >= 0.0,
+                0.0 <= params.curve_corner_start_angle <= SHARP_CURVE_HARD_ANGLE_DEG,
             ]
         )
 
@@ -1344,9 +1360,37 @@ class RopeBuilderController:
             points_attr.Set(Vt.Vec3fArray())
             return
 
+        pts_world = self._tighten_curve_corners(pts_world, state.params.curve_corner_start_angle)
         local_pts = self._world_to_local_points(curve_prim, pts_world)
         counts_attr.Set(Vt.IntArray([len(local_pts)]))
         points_attr.Set(Vt.Vec3fArray(local_pts))
+
+    def _tighten_curve_corners(self, points: List[Gf.Vec3d], start_angle_deg: float) -> List[Gf.Vec3d]:
+        start_angle = max(float(start_angle_deg), 0.0)
+        if len(points) < 3 or start_angle <= 0.0:
+            return points
+
+        def safe_dir(vec):
+            out = Gf.Vec3d(vec)
+            if out.GetLength() < 1e-6:
+                return Gf.Vec3d(1.0, 0.0, 0.0)
+            out.Normalize()
+            return out
+
+        tightened = [points[0]]
+        for prev_pt, pt, next_pt in zip(points, points[1:], points[2:]):
+            tightened.append(pt)
+            prev_dir = safe_dir(pt - prev_pt)
+            next_dir = safe_dir(next_pt - pt)
+            dot = prev_dir[0] * next_dir[0] + prev_dir[1] * next_dir[1] + prev_dir[2] * next_dir[2]
+            angle = math.degrees(math.acos(max(min(dot, 1.0), -1.0)))
+            if angle > start_angle:
+                ramp_span = max(SHARP_CURVE_HARD_ANGLE_DEG - start_angle, 1e-6)
+                ramp = min((angle - start_angle) / ramp_span, 1.0)
+                duplicate_count = max(1, int(math.ceil(ramp * SHARP_CURVE_MAX_DUPLICATES)))
+                tightened.extend([pt] * duplicate_count)
+        tightened.append(points[-1])
+        return tightened
 
     def _on_curve_update(self, root_path: str, _dt):
         state = self._cables.get(root_path)
@@ -1767,6 +1811,7 @@ class RopeBuilderController:
             drive_stiffness=stiffness,
             drive_damping=damping,
             drive_max_force=max_force,
+            curve_corner_start_angle=DEFAULT_PARAMS.curve_corner_start_angle,
             curve_width_scale=DEFAULT_PARAMS.curve_width_scale,
         )
         half_span = max(span * 0.5, 0.0)
